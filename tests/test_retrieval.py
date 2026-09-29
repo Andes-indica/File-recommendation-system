@@ -191,3 +191,49 @@ def test_query_analysis_failure_falls_back_to_deterministic_plan(tmp_path):
     assert analyzer.calls == [query]
     assert plan.strategy == "hybrid"
     assert results[0].name == "status-report.md"
+
+
+def test_profile_endpoint_reports_usage_preferences_topics_and_time(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    notes = source / "project-notes.md"
+    tasks = source / "project-tasks.txt"
+    notes.write_text("Project planning milestones and stakeholder updates", encoding="utf-8")
+    tasks.write_text("Project planning task owners and delivery dates", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+    store.record_access("alice", str(notes))
+    store.record_access("alice", str(notes))
+    store.record_access("alice", str(tasks))
+    client = TestClient(create_app(store))
+
+    response = client.get("/users/alice/profile")
+
+    assert response.status_code == 200
+    profile = response.json()
+    assert profile["total_access_events"] == 3
+    assert profile["frequently_accessed_files"][0]["name"] == "project-notes.md"
+    assert profile["frequently_accessed_files"][0]["access_count"] == 2
+    assert profile["preferred_extensions"][0]["extension"] == ".md"
+    assert "project" in {topic["term"] for topic in profile["topics_of_interest"]}
+    assert sum(hour["access_count"] for hour in profile["active_hours_utc"]) == 3
+    assert sum(day["access_count"] for day in profile["active_weekdays_utc"]) == 3
+
+
+def test_profile_preferences_personalize_candidate_and_explain_signal(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    markdown = source / "alpha.md"
+    text_file = source / "beta.txt"
+    markdown.write_text("project status updates", encoding="utf-8")
+    text_file.write_text("project status updates", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+    store.record_access("alice", str(text_file))
+
+    _, results = store.search("project status updates", user_id="alice")
+
+    assert results[0].path == str(text_file.resolve())
+    assert "preferred file type" in results[0].explanation
+    assert "Recently accessed" in results[0].explanation
+    assert "often accessed at this hour" in results[0].explanation

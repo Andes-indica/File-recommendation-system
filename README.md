@@ -43,7 +43,8 @@ Only `.txt`, `.md`, and `.rst` files up to 1 MiB are indexed. The database defau
 - Hybrid filename and full-text candidate ranking for longer natural-language queries; semantic candidates join when embeddings are enabled.
 - Optional semantic search through a local Sentence Transformers model, with vectors cached by file content and model id.
 - Optional cross-encoder reranking of up to the top 30 retrieved candidates.
-- Optional personalization from explicit file-access events, with a short explanation attached to each result.
+- Personalized ranking from file-access frequency and recency, preferred extensions and topics, and per-file UTC hour/weekday patterns.
+- A derived user profile endpoint for frequently accessed files, preferred extensions, topics, and active time patterns.
 
 Enable local semantic retrieval by installing the optional dependency and setting a model before starting the API:
 
@@ -65,6 +66,18 @@ export FILE_RECOMMENDER_LLM_BASE_URL='https://api.openai.com/v1'
 uvicorn file_recommender.api:app --reload
 ```
 
-The analyzer runs only for longer queries already routed to hybrid search, sends only the user query (never indexed file contents), and has a 3-second timeout. Its route proposal must match capabilities enabled in the app; unsupported or failed analyses fall back to the local planner. Use a provider whose data handling is appropriate for your queries. Feedback-driven profile learning remains a follow-up increment.
+The analyzer runs only for longer queries already routed to hybrid search, sends only the user query (never indexed file contents), and has a 3-second timeout. Its route proposal must match capabilities enabled in the app; unsupported or failed analyses fall back to the local planner. Use a provider whose data handling is appropriate for your queries.
+
+Record file opens to build a local usage profile and supply personalization signals during search:
+
+```bash
+curl -X POST http://127.0.0.1:8000/access \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"local-user","path":"/path/to/your/files/plan.md"}'
+
+curl http://127.0.0.1:8000/users/local-user/profile
+```
+
+Profiles are derived from recorded access events when requested; the service does not persist a separate profile record. Ranking explanations identify when access history, file-type/topic preference, recency, or matching UTC time patterns influenced a result.
 
 Run tests with `pytest`.

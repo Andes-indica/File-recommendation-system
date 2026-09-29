@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from collections import Counter
 import hashlib
+import math
 import math
 from pathlib import Path
 import re
@@ -16,6 +18,7 @@ from .query_understanding import QueryAnalysis
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst"}
 MAX_FILE_BYTES = 1024 * 1024
+TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
 
 class EmbeddingProvider(Protocol):
     def encode(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
@@ -279,17 +282,52 @@ class IndexStore:
             if self.reranker is not None and ranked:
                 ranked = self._rerank_candidates(retrieval_query, ranked)
 
-            access = self._access_signals(connection, user_id) if user_id else {}
+            profile = self._profile_signals(connection, user_id) if user_id else None
             results: list[tuple[SearchResult, int, str]] = []
+            now = datetime.now(timezone.utc)
             for row, base_score, matched_by in ranked:
-                count, last_access = access.get(row["id"], (0, None))
-                score = base_score + min(count, 5) * 0.01
+                file_activity = profile["files"].get(row["id"], {}) if profile else {}
+                count = file_activity.get("count", 0)
+                last_access = file_activity.get("last_access")
+                score = base_score
                 explanations = [f"Matched by {matched_by} ({plan.strategy} retrieval)."]
                 if count:
-                    score += 0.02
+                    score += min(count, 5) * 0.01
                     explanations.append(f"Previously accessed {count} time(s) by this user.")
                     if last_access:
                         explanations.append(f"Last accessed {last_access[:10]}.")
+                        try:
+                            last_accessed = datetime.fromisoformat(last_access)
+                            if last_accessed.tzinfo is None:
+                                last_accessed = last_accessed.replace(tzinfo=timezone.utc)
+                            age_days = max(
+                                0.0,
+                                (now - last_accessed.astimezone(timezone.utc)).total_seconds() / 86400,
+                            )
+                            recency_boost = 0.03 * math.exp(-age_days / 14)
+                            score += recency_boost
+                            if recency_boost >= 0.005:
+                                explanations.append("Recently accessed by this user.")
+                        except ValueError:
+                            pass
+                if profile:
+                    extension_affinity = profile["extensions"].get(row["extension"], 0) / profile["event_count"]
+                    if extension_affinity:
+                        score += extension_affinity * 0.02
+                        explanations.append(f"Matches a preferred file type ({row['extension']}).")
+
+                    candidate_terms = set(TOKEN.findall(f"{row['name']} {row['content']}".casefold()))
+                    topic_matches = candidate_terms & profile["topic_terms"]
+                    if topic_matches:
+                        score += min(len(topic_matches), 3) * 0.01
+                        explanations.append("Matches topics in your file activity.")
+
+                    if file_activity.get("hours", {}).get(now.hour, 0):
+                        score += 0.015
+                        explanations.append("This file is often accessed at this hour (UTC).")
+                    if file_activity.get("weekdays", {}).get(now.weekday(), 0):
+                        score += 0.01
+                        explanations.append("This file is often accessed on this weekday (UTC).")
                 results.append(
                     (
                         SearchResult(
@@ -431,3 +469,130 @@ class IndexStore:
             (user_id,),
         ).fetchall()
         return {row["document_id"]: (row["access_count"], row["last_access"]) for row in rows}
+
+    @staticmethod
+    def _profile_signals(connection: sqlite3.Connection, user_id: str):
+        events = connection.execute(
+            """
+            SELECT documents.id, documents.path, documents.name, documents.extension,
+                   documents.content, access_events.accessed_at
+            FROM access_events
+            JOIN documents ON documents.id = access_events.document_id
+            WHERE access_events.user_id = ?
+            ORDER BY access_events.accessed_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+        if not events:
+            return {
+                "event_count": 0,
+                "files": {},
+                "extensions": {},
+                "topics": [],
+                "topic_terms": set(),
+                "hours": {},
+                "weekdays": {},
+                "files": {},
+            }
+
+        file_counts: Counter[int] = Counter()
+        file_last_access: dict[int, str] = {}
+        extensions: Counter[str] = Counter()
+        topic_counts: Counter[str] = Counter()
+        hours: Counter[int] = Counter()
+        weekdays: Counter[int] = Counter()
+        file_hours: dict[int, Counter[int]] = {}
+        file_weekdays: dict[int, Counter[int]] = {}
+        distinct_documents: dict[int, sqlite3.Row] = {}
+        stop_words = {
+            "about", "after", "also", "and", "are", "because", "been", "before", "being",
+            "between", "but", "can", "could", "file", "files", "for", "from", "have", "into",
+            "its", "just", "more", "most", "not", "our", "out", "over", "same", "some",
+            "such", "than", "that", "the", "their", "them", "then", "there", "these", "they",
+            "this", "those", "through", "under", "use", "using", "was", "were", "what", "when",
+            "where", "which", "while", "with", "would", "your",
+        }
+        for event in events:
+            document_id = event["id"]
+            file_counts[document_id] += 1
+            file_last_access.setdefault(document_id, event["accessed_at"])
+            extensions[event["extension"]] += 1
+            distinct_documents[document_id] = event
+            try:
+                accessed_at = datetime.fromisoformat(event["accessed_at"])
+            except ValueError:
+                continue
+            if accessed_at.tzinfo is None:
+                accessed_at = accessed_at.replace(tzinfo=timezone.utc)
+            accessed_at = accessed_at.astimezone(timezone.utc)
+            hours[accessed_at.hour] += 1
+            weekdays[accessed_at.weekday()] += 1
+            file_hours.setdefault(document_id, Counter())[accessed_at.hour] += 1
+            file_weekdays.setdefault(document_id, Counter())[accessed_at.weekday()] += 1
+
+        for document_id, document in distinct_documents.items():
+            weight = min(file_counts[document_id], 5)
+            words = {
+                word
+                for word in TOKEN.findall(f"{document['name']} {document['content']}".casefold())
+                if len(word) >= 3 and word not in stop_words and not word.isdigit()
+            }
+            topic_counts.update({word: weight for word in words})
+
+        top_topics = topic_counts.most_common(10)
+        return {
+            "event_count": len(events),
+            "files": {
+                document_id: {
+                    "count": count,
+                    "last_access": file_last_access[document_id],
+                    "hours": dict(file_hours.get(document_id, {})),
+                    "weekdays": dict(file_weekdays.get(document_id, {})),
+                }
+                for document_id, count in file_counts.items()
+            },
+            "extensions": dict(extensions),
+            "topics": [{"term": term, "access_count": count} for term, count in top_topics],
+            "topic_terms": {term for term, _ in top_topics},
+            "hours": dict(hours),
+            "weekdays": dict(weekdays),
+        }
+
+    def get_user_profile(self, user_id: str) -> dict[str, object]:
+        with self._connect() as connection:
+            profile = self._profile_signals(connection, user_id)
+            frequent_files = connection.execute(
+                """
+                SELECT documents.path, documents.name, documents.extension,
+                       COUNT(access_events.id) AS access_count,
+                       MAX(access_events.accessed_at) AS last_accessed
+                FROM access_events
+                JOIN documents ON documents.id = access_events.document_id
+                WHERE access_events.user_id = ?
+                GROUP BY documents.id
+                ORDER BY access_count DESC, last_accessed DESC
+                LIMIT 10
+                """,
+                (user_id,),
+            ).fetchall()
+
+        event_count = profile["event_count"]
+        extensions = profile["extensions"]
+        return {
+            "user_id": user_id,
+            "total_access_events": event_count,
+            "frequently_accessed_files": [dict(row) for row in frequent_files],
+            "preferred_extensions": [
+                {"extension": extension, "access_count": count, "share": round(count / event_count, 3)}
+                for extension, count in sorted(extensions.items(), key=lambda item: (-item[1], item[0]))
+            ] if event_count else [],
+            "topics_of_interest": profile["topics"],
+            "active_hours_utc": [
+                {"hour": hour, "access_count": count}
+                for hour, count in sorted(profile["hours"].items(), key=lambda item: (-item[1], item[0]))
+            ],
+            "active_weekdays_utc": [
+                {"weekday": weekday, "access_count": count}
+                for weekday, count in sorted(profile["weekdays"].items(), key=lambda item: (-item[1], item[0]))
+            ],
+        }

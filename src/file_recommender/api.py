@@ -77,6 +77,12 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
         if not index.record_access(request.user_id, request.path):
             raise HTTPException(status_code=404, detail="File is not in the index.")
 
+    @application.get("/users/{user_id}/profile")
+    def get_user_profile(user_id: str):
+        if not user_id or len(user_id) > 128:
+            raise HTTPException(status_code=400, detail="User id must be between 1 and 128 characters.")
+        return index.get_user_profile(user_id)
+
     return application
 
 
