@@ -1,11 +1,15 @@
 import re
+from io import BytesIO
 
+import pytest
 from fastapi.testclient import TestClient
 
 from file_recommender.api import create_app
 from file_recommender.index import IndexStore
 from file_recommender.planner import plan_query
 from file_recommender.query_understanding import QueryAnalysis
+from file_recommender.ingestion import extract_text
+from file_recommender.chunking import split_into_chunks
 
 
 class ConceptEmbedder:
@@ -29,7 +33,11 @@ class ConceptEmbedder:
 
 
 class PreferredTextReranker:
+    def __init__(self):
+        self.calls = 0
+
     def score(self, query, documents):
+        self.calls += 1
         return [5.0 if "preferred candidate" in document.casefold() else -5.0 for document in documents]
 
 
@@ -71,6 +79,12 @@ def test_index_and_search_return_explainable_recommendations(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert payload["strategy"] == "hybrid"
+    assert 0.0 <= payload["confidence"] <= 1.0
+    assert payload["expanded_query"] is None
+    assert payload["diagnostics"]["candidate_count"] >= 1
+    assert payload["diagnostics"]["reranked"] is False
+    assert payload["diagnostics"]["rerank_reason"] == "reranker is not configured"
+    assert payload["diagnostics"]["latency_ms"] >= 0
     assert payload["results"][0]["name"] == "launch-plan.md"
     assert "Matched by" in payload["results"][0]["explanation"]
 
@@ -155,6 +169,23 @@ def test_cross_encoder_reranker_changes_candidate_order(tmp_path):
     assert plan.strategy == "keyword"
     assert results[0].name == "z-preferred.txt"
     assert "cross-encoder reranking" in results[0].explanation
+    assert store.reranker.calls == 1
+
+
+def test_reranker_skips_single_candidate_to_save_compute(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "unique-match.md").write_text("xylophone calibration protocol", encoding="utf-8")
+    reranker = PreferredTextReranker()
+    store = IndexStore(tmp_path / "index.sqlite3", reranker=reranker)
+    store.index_directory(source)
+
+    execution = store.search_with_diagnostics("xylophone calibration protocol")
+
+    assert execution.candidate_count == 1
+    assert execution.reranked is False
+    assert execution.rerank_reason == "fewer than two candidates"
+    assert reranker.calls == 0
 
 
 def test_query_analysis_refines_query_and_selects_supported_strategy(tmp_path):
@@ -237,3 +268,239 @@ def test_profile_preferences_personalize_candidate_and_explain_signal(tmp_path):
     assert "preferred file type" in results[0].explanation
     assert "Recently accessed" in results[0].explanation
     assert "often accessed at this hour" in results[0].explanation
+
+
+def test_feedback_on_recommendation_improves_its_future_rank(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "alpha.txt").write_text("planning roadmap milestones", encoding="utf-8")
+    (source / "zeta.txt").write_text("planning roadmap milestones", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+    client = TestClient(create_app(store))
+
+    first_search = client.post(
+        "/search",
+        json={"query": "planning roadmap milestones", "user_id": "alice"},
+    )
+    assert first_search.status_code == 200
+    initial_results = first_search.json()["results"]
+    target = next(result for result in initial_results if result["name"] == "zeta.txt")
+    assert initial_results[0]["name"] == "alpha.txt"
+    assert target["recommendation_id"] is not None
+
+    feedback_response = client.post(
+        "/feedback",
+        json={
+            "user_id": "alice",
+            "recommendation_id": target["recommendation_id"],
+            "feedback": "relevant",
+        },
+    )
+    assert feedback_response.status_code == 200
+
+    next_search = client.post(
+        "/search",
+        json={"query": "planning roadmap milestones", "user_id": "alice"},
+    )
+    assert next_search.json()["results"][0]["name"] == "zeta.txt"
+    assert "Previously marked relevant" in next_search.json()["results"][0]["explanation"]
+    assert client.get("/users/alice/profile").json()["feedback_summary"] == {"relevant": 1}
+
+
+def test_feedback_cannot_be_recorded_for_another_user_or_missing_recommendation(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    document = source / "notes.md"
+    document.write_text("project notes", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+    client = TestClient(create_app(store))
+    search = client.post("/search", json={"query": "project notes", "user_id": "alice"})
+    recommendation_id = search.json()["results"][0]["recommendation_id"]
+
+    response = client.post(
+        "/feedback",
+        json={
+            "user_id": "bob",
+            "recommendation_id": recommendation_id,
+            "feedback": "not_relevant",
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_not_relevant_feedback_lowers_future_rank(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "alpha.txt").write_text("planning roadmap milestones", encoding="utf-8")
+    (source / "zeta.txt").write_text("planning roadmap milestones", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+    client = TestClient(create_app(store))
+    initial = client.post(
+        "/search",
+        json={"query": "planning roadmap milestones", "user_id": "alice"},
+    ).json()["results"]
+    target = next(result for result in initial if result["name"] == "alpha.txt")
+
+    feedback_response = client.post(
+        "/feedback",
+        json={
+            "user_id": "alice",
+            "recommendation_id": target["recommendation_id"],
+            "feedback": "not_relevant",
+        },
+    )
+    assert feedback_response.status_code == 200
+
+    later_results = client.post(
+        "/search",
+        json={"query": "planning roadmap milestones", "user_id": "alice"},
+    ).json()["results"]
+    assert later_results[0]["name"] == "zeta.txt"
+    alpha_result = next(result for result in later_results if result["name"] == "alpha.txt")
+    assert "Previously marked not relevant" in alpha_result["explanation"]
+
+
+def test_low_confidence_search_expands_once_to_find_synonym_match(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "vehicle-care.md").write_text("Car maintenance and repair guide", encoding="utf-8")
+    (source / "garden-care.md").write_text("Flower and plant care guide", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+
+    execution = store.search_with_diagnostics("automobile repair manual")
+
+    assert execution.expanded_query is not None
+    assert "car" in execution.expanded_query.split()
+    assert execution.plan.strategy == "hybrid"
+    assert execution.results[0].name == "vehicle-care.md"
+    assert execution.confidence > 0.4
+
+    response = TestClient(create_app(store)).post(
+        "/search",
+        json={"query": "automobile repair manual"},
+    )
+    assert response.status_code == 200
+    assert response.json()["expanded_query"] == execution.expanded_query
+    assert response.json()["results"][0]["name"] == "vehicle-care.md"
+
+
+def test_docx_and_pdf_files_are_extracted_and_searchable(tmp_path):
+    document_module = pytest.importorskip("docx")
+    reportlab_canvas = pytest.importorskip("reportlab.pdfgen.canvas")
+    source = tmp_path / "files"
+    source.mkdir()
+
+    docx_path = source / "project-brief.docx"
+    document = document_module.Document()
+    document.add_paragraph("Orchid migration timeline and release milestones")
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Owner"
+    table.cell(0, 1).text = "Platform team"
+    document.save(docx_path)
+
+    pdf_path = source / "research-summary.pdf"
+    pdf_buffer = BytesIO()
+    canvas = reportlab_canvas.Canvas(pdf_buffer)
+    canvas.drawString(72, 720, "Pollinator habitat research findings")
+    canvas.save()
+    pdf_path.write_bytes(pdf_buffer.getvalue())
+
+    store = IndexStore(tmp_path / "index.sqlite3")
+    outcome = store.index_directory(source)
+    assert outcome == {"indexed": 2, "skipped": 0, "removed": 0}
+
+    docx_plan, docx_results = store.search("orchid migration timeline")
+    pdf_plan, pdf_results = store.search("pollinator habitat research")
+    with store._connect() as connection:
+        docx_content = connection.execute(
+            "SELECT content FROM documents WHERE path = ?", (str(docx_path.resolve()),)
+        ).fetchone()["content"]
+
+    assert docx_plan.strategy == "hybrid"
+    assert docx_results[0].name == "project-brief.docx"
+    assert "Platform team" in docx_content
+    assert pdf_plan.strategy == "hybrid"
+    assert pdf_results[0].name == "research-summary.pdf"
+
+
+def test_malformed_docx_is_skipped_and_extraction_limits_are_enforced(tmp_path):
+    pytest.importorskip("docx")
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "corrupt.docx").write_bytes(b"not a zip archive")
+    (source / "empty.txt").write_text("", encoding="utf-8")
+    (source / "valid.md").write_text("supported project notes", encoding="utf-8")
+    (source / "unsupported.csv").write_text("unsupported,format", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+
+    outcome = store.index_directory(source)
+
+    assert outcome == {"indexed": 1, "skipped": 3, "removed": 0}
+    with pytest.raises(ValueError, match="Unsupported file type"):
+        extract_text(source / "unsupported.csv")
+
+
+def test_chunking_preserves_order_and_overlap():
+    text = " ".join(f"term{index}" for index in range(500))
+
+    chunks = split_into_chunks(text, chunk_size=300, overlap=50)
+
+    assert len(chunks) > 1
+    assert "term0" in chunks[0]
+    assert "term499" in chunks[-1]
+    assert chunks[0][-40:] in chunks[1]
+    assert split_into_chunks(" \n ") == []
+    with pytest.raises(ValueError):
+        split_into_chunks("text", chunk_size=10, overlap=10)
+
+
+def test_long_document_is_indexed_and_searched_by_chunks(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    document_path = source / "long-research.md"
+    early_section = "background context and general introduction " * 70
+    target_section = "rare orchid cultivation protocol with greenhouse temperature controls"
+    document_path.write_text(early_section + target_section, encoding="utf-8")
+    embedder = ConceptEmbedder()
+    store = IndexStore(tmp_path / "index.sqlite3", embedder=embedder)
+
+    store.index_directory(source)
+    with store._connect() as connection:
+        chunk_count = connection.execute(
+            "SELECT COUNT(*) FROM file_chunks WHERE document_id = (SELECT id FROM documents WHERE path = ?)",
+            (str(document_path.resolve()),),
+        ).fetchone()[0]
+        embedding_count = connection.execute(
+            "SELECT COUNT(*) FROM chunk_embeddings"
+        ).fetchone()[0]
+    assert chunk_count > 1
+    assert embedding_count == chunk_count
+    embedded_count = embedder.encoded_texts
+
+    store.index_directory(source)
+    assert embedder.encoded_texts == embedded_count
+    plan, results = store.search("orchid cultivation protocol")
+
+    assert plan.strategy == "hybrid"
+    assert results[0].name == "long-research.md"
+
+
+def test_reindex_replaces_stale_chunk_search_terms(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    document_path = source / "changing.md"
+    document_path.write_text("amber comet discovery notes", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+    assert store.search("amber comet discovery")[1]
+
+    document_path.write_text("violet telescope observation notes", encoding="utf-8")
+    store.index_directory(source)
+
+    assert store.search("amber comet discovery")[1] == []
+    assert store.search("violet telescope observation")[1][0].name == "changing.md"

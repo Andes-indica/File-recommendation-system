@@ -5,18 +5,19 @@ from datetime import datetime, timezone
 from collections import Counter
 import hashlib
 import math
-import math
 from pathlib import Path
 import re
 import sqlite3
 import struct
+from time import perf_counter
 from typing import Protocol, Sequence
 
 from .planner import RetrievalPlan, plan_query
 from .query_understanding import QueryAnalysis
+from .ingestion import SUPPORTED_EXTENSIONS, extract_text
+from .chunking import split_into_chunks
 
 
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst"}
 MAX_FILE_BYTES = 1024 * 1024
 TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
 
@@ -44,6 +45,19 @@ class SearchResult:
     modified_at: str
     score: float
     explanation: str
+    recommendation_id: int | None = None
+
+
+@dataclass(frozen=True)
+class SearchExecution:
+    plan: RetrievalPlan
+    results: list[SearchResult]
+    confidence: float
+    expanded_query: str | None
+    candidate_count: int
+    reranked: bool
+    rerank_reason: str
+    latency_ms: float
 
 
 class IndexStore:
@@ -87,6 +101,29 @@ class IndexStore:
                     content,
                     tokenize='unicode61'
                 );
+                CREATE TABLE IF NOT EXISTS file_chunks (
+                    id INTEGER PRIMARY KEY,
+                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    chunk_index INTEGER NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    UNIQUE(document_id, chunk_index)
+                );
+                CREATE INDEX IF NOT EXISTS file_chunks_document
+                    ON file_chunks(document_id, chunk_index);
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+                    name,
+                    document_id UNINDEXED,
+                    content,
+                    tokenize='unicode61'
+                );
+                CREATE TABLE IF NOT EXISTS chunk_embeddings (
+                    chunk_id INTEGER PRIMARY KEY REFERENCES file_chunks(id) ON DELETE CASCADE,
+                    content_hash TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    dimension INTEGER NOT NULL,
+                    vector BLOB NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS access_events (
                     id INTEGER PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -95,6 +132,18 @@ class IndexStore:
                 );
                 CREATE INDEX IF NOT EXISTS access_user_document
                     ON access_events(user_id, document_id);
+                CREATE TABLE IF NOT EXISTS recommendation_events (
+                    id INTEGER PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    query TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    recommended_at TEXT NOT NULL,
+                    feedback TEXT CHECK (feedback IN ('relevant', 'not_relevant')),
+                    feedback_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS recommendation_user_document
+                    ON recommendation_events(user_id, document_id, feedback);
                 CREATE TABLE IF NOT EXISTS semantic_embeddings (
                     document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
                     content_hash TEXT NOT NULL,
@@ -135,9 +184,12 @@ class IndexStore:
                     if path.stat().st_size > MAX_FILE_BYTES:
                         skipped += 1
                         continue
-                    content = path.read_text(encoding="utf-8", errors="replace")
+                    content = extract_text(path)
+                    if not content.strip():
+                        skipped += 1
+                        continue
                     stats = path.stat()
-                except OSError:
+                except (OSError, ValueError):
                     skipped += 1
                     continue
 
@@ -169,19 +221,44 @@ class IndexStore:
                 document_id = connection.execute(
                     "SELECT id FROM documents WHERE path = ?", (resolved_path,)
                 ).fetchone()["id"]
-                content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                chunks = split_into_chunks(content)
+                existing_chunks = connection.execute(
+                    "SELECT id, chunk_index, content_hash, content FROM file_chunks WHERE document_id = ? ORDER BY chunk_index",
+                    (document_id,),
+                ).fetchall()
+                if [chunk["content"] for chunk in existing_chunks] != chunks:
+                    connection.execute("DELETE FROM chunk_fts WHERE document_id = ?", (document_id,))
+                    connection.execute("DELETE FROM file_chunks WHERE document_id = ?", (document_id,))
+                    existing_chunks = []
+                    for chunk_index, chunk_text in enumerate(chunks):
+                        chunk_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+                        cursor = connection.execute(
+                            "INSERT INTO file_chunks(document_id, chunk_index, content_hash, content) VALUES (?, ?, ?, ?)",
+                            (document_id, chunk_index, chunk_hash, chunk_text),
+                        )
+                        chunk_id = cursor.lastrowid
+                        connection.execute(
+                            "INSERT INTO chunk_fts(rowid, name, document_id, content) VALUES (?, ?, ?, ?)",
+                            (chunk_id, path.name, document_id, chunk_text),
+                        )
+                        existing_chunks.append(
+                            {"id": chunk_id, "content_hash": chunk_hash, "content": chunk_text}
+                        )
+                model_id = getattr(self.embedder, "model_id", type(self.embedder).__qualname__) if self.embedder else None
                 if self.embedder is not None:
-                    cached = connection.execute(
-                        "SELECT content_hash, model_id FROM semantic_embeddings WHERE document_id = ?",
-                        (document_id,),
-                    ).fetchone()
-                    model_id = getattr(self.embedder, "model_id", type(self.embedder).__qualname__)
-                    if (
-                        cached is None
-                        or cached["content_hash"] != content_hash
-                        or cached["model_id"] != model_id
-                    ):
-                        embedding_jobs.append((document_id, content_hash, f"{path.name}\n{content}"))
+                    for chunk in existing_chunks:
+                        cached = connection.execute(
+                            "SELECT content_hash, model_id FROM chunk_embeddings WHERE chunk_id = ?",
+                            (chunk["id"],),
+                        ).fetchone()
+                        if (
+                            cached is None
+                            or cached["content_hash"] != chunk["content_hash"]
+                            or cached["model_id"] != model_id
+                        ):
+                            embedding_jobs.append(
+                                (chunk["id"], chunk["content_hash"], f"{path.name}\n{chunk['content']}")
+                            )
                 connection.execute("DELETE FROM document_fts WHERE rowid = ?", (document_id,))
                 connection.execute(
                     "INSERT INTO document_fts(rowid, name, path, content) VALUES (?, ?, ?, ?)",
@@ -190,31 +267,34 @@ class IndexStore:
                 indexed += 1
 
             if embedding_jobs:
-                vectors = self.embedder.encode([job[2] for job in embedding_jobs])
-                if len(vectors) != len(embedding_jobs):
-                    raise ValueError("Embedding provider returned an unexpected number of vectors.")
-                for (document_id, content_hash, _), vector in zip(embedding_jobs, vectors):
-                    values = tuple(float(value) for value in vector)
-                    if not values:
-                        raise ValueError("Embedding provider returned an empty vector.")
-                    connection.execute(
-                        """
-                        INSERT INTO semantic_embeddings(document_id, content_hash, model_id, dimension, vector)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(document_id) DO UPDATE SET
-                            content_hash = excluded.content_hash,
-                            model_id = excluded.model_id,
-                            dimension = excluded.dimension,
-                            vector = excluded.vector
-                        """,
-                        (
-                            document_id,
-                            content_hash,
-                            getattr(self.embedder, "model_id", type(self.embedder).__qualname__),
-                            len(values),
-                            struct.pack(f"<{len(values)}f", *values),
-                        ),
-                    )
+                model_id = getattr(self.embedder, "model_id", type(self.embedder).__qualname__)
+                for batch_start in range(0, len(embedding_jobs), 64):
+                    batch = embedding_jobs[batch_start : batch_start + 64]
+                    vectors = self.embedder.encode([job[2] for job in batch])
+                    if len(vectors) != len(batch):
+                        raise ValueError("Embedding provider returned an unexpected number of vectors.")
+                    for (chunk_id, content_hash, _), vector in zip(batch, vectors):
+                        values = tuple(float(value) for value in vector)
+                        if not values:
+                            raise ValueError("Embedding provider returned an empty vector.")
+                        connection.execute(
+                            """
+                            INSERT INTO chunk_embeddings(chunk_id, content_hash, model_id, dimension, vector)
+                            VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(chunk_id) DO UPDATE SET
+                                content_hash = excluded.content_hash,
+                                model_id = excluded.model_id,
+                                dimension = excluded.dimension,
+                                vector = excluded.vector
+                            """,
+                            (
+                                chunk_id,
+                                content_hash,
+                                model_id,
+                                len(values),
+                                struct.pack(f"<{len(values)}f", *values),
+                            ),
+                        )
 
             existing = connection.execute(
                 "SELECT id, path FROM documents WHERE source_root = ?", (str(root),)
@@ -222,6 +302,7 @@ class IndexStore:
             stale_ids = [row["id"] for row in existing if row["path"] not in seen_paths]
             for document_id in stale_ids:
                 connection.execute("DELETE FROM document_fts WHERE rowid = ?", (document_id,))
+                connection.execute("DELETE FROM chunk_fts WHERE document_id = ?", (document_id,))
                 connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
 
         return {"indexed": indexed, "skipped": skipped, "removed": len(stale_ids)}
@@ -239,10 +320,34 @@ class IndexStore:
             )
             return True
 
+    def record_feedback(self, user_id: str, recommendation_id: int, feedback: str) -> bool:
+        if feedback not in {"relevant", "not_relevant"}:
+            raise ValueError("Feedback must be 'relevant' or 'not_relevant'.")
+        with self._connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE recommendation_events
+                SET feedback = ?, feedback_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (feedback, datetime.now(timezone.utc).isoformat(), recommendation_id, user_id),
+            )
+            return result.rowcount == 1
+
     def search(self, query: str, user_id: str | None = None, limit: int = 10) -> tuple[RetrievalPlan, list[SearchResult]]:
+        execution = self.search_with_diagnostics(query, user_id, limit)
+        return execution.plan, execution.results
+
+    def search_with_diagnostics(
+        self,
+        query: str,
+        user_id: str | None = None,
+        limit: int = 10,
+    ) -> SearchExecution:
+        started_at = perf_counter()
         plan = plan_query(query, semantic_available=self.embedder is not None)
         if not plan.terms:
-            return plan, []
+            return SearchExecution(plan, [], 0.0, None, 0, False, "empty query", 0.0)
 
         retrieval_query = query
         if self.query_analyzer is not None and plan.strategy == "hybrid" and len(plan.terms) >= 6:
@@ -279,10 +384,46 @@ class IndexStore:
             else:
                 ranked = self._hybrid_candidates(connection, plan.terms, retrieval_query)
 
-            if self.reranker is not None and ranked:
-                ranked = self._rerank_candidates(retrieval_query, ranked)
+            confidence = self._candidate_confidence(ranked, plan.terms)
+            expanded_query = None
+            if confidence < 0.6 and plan.strategy != "metadata":
+                expanded_query = self._expand_query(query)
+                if expanded_query and expanded_query.casefold() != query.casefold():
+                    expanded_terms = tuple(TOKEN.findall(expanded_query))
+                    expanded_plan = RetrievalPlan(
+                        "hybrid",
+                        "The initial matches were weak; one expanded keyword and semantic search was attempted.",
+                        expanded_terms,
+                    )
+                    expanded_ranked = self._hybrid_candidates(
+                        connection,
+                        expanded_terms,
+                        expanded_query,
+                    )
+                    expanded_confidence = self._candidate_confidence(expanded_ranked, expanded_terms)
+                    if expanded_confidence > confidence or (not ranked and expanded_ranked):
+                        ranked = expanded_ranked
+                        confidence = expanded_confidence
+                        retrieval_query = expanded_query
+                        plan = expanded_plan
+                    else:
+                        expanded_query = None
+
+            candidate_count = len(ranked)
+            reranked = False
+            rerank_reason = "reranker is not configured"
+            if self.reranker is not None:
+                should_rerank, rerank_reason = self._should_rerank(ranked, confidence)
+                if should_rerank:
+                    try:
+                        ranked = self._rerank_candidates(retrieval_query, ranked)
+                        reranked = True
+                        rerank_reason = "ambiguous or low-confidence candidates"
+                    except (RuntimeError, ValueError, TypeError, OSError):
+                        rerank_reason = "reranker failed; retained retrieval ranking"
 
             profile = self._profile_signals(connection, user_id) if user_id else None
+            feedback_signals = self._feedback_signals(connection, user_id) if user_id else {}
             results: list[tuple[SearchResult, int, str]] = []
             now = datetime.now(timezone.utc)
             for row, base_score, matched_by in ranked:
@@ -310,7 +451,7 @@ class IndexStore:
                                 explanations.append("Recently accessed by this user.")
                         except ValueError:
                             pass
-                if profile:
+                if profile and profile["event_count"]:
                     extension_affinity = profile["extensions"].get(row["extension"], 0) / profile["event_count"]
                     if extension_affinity:
                         score += extension_affinity * 0.02
@@ -328,6 +469,13 @@ class IndexStore:
                     if file_activity.get("weekdays", {}).get(now.weekday(), 0):
                         score += 0.01
                         explanations.append("This file is often accessed on this weekday (UTC).")
+                positive_feedback, negative_feedback = feedback_signals.get(row["id"], (0, 0))
+                if positive_feedback:
+                    score += min(positive_feedback, 3) * 0.025
+                    explanations.append(f"Previously marked relevant {positive_feedback} time(s).")
+                if negative_feedback:
+                    score -= min(negative_feedback, 3) * 0.04
+                    explanations.append(f"Previously marked not relevant {negative_feedback} time(s).")
                 results.append(
                     (
                         SearchResult(
@@ -345,7 +493,103 @@ class IndexStore:
                 )
 
         results.sort(key=lambda item: (-item[0].score, -item[1], item[2]))
-        return plan, [item[0] for item in results[:limit]]
+        selected = [item[0] for item in results[:limit]]
+        if user_id and selected:
+            with self._connect() as connection:
+                for position, result in enumerate(selected):
+                    document = connection.execute(
+                        "SELECT id FROM documents WHERE path = ?", (result.path,)
+                    ).fetchone()
+                    if document is None:
+                        continue
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO recommendation_events(
+                            user_id, document_id, query, strategy, recommended_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            user_id,
+                            document["id"],
+                            query,
+                            plan.strategy,
+                            now.isoformat(),
+                        ),
+                    )
+                    selected[position] = SearchResult(
+                        **{**result.__dict__, "recommendation_id": cursor.lastrowid}
+                    )
+        return SearchExecution(
+            plan,
+            selected,
+            round(confidence, 4),
+            expanded_query,
+            candidate_count,
+            reranked,
+            rerank_reason,
+            round((perf_counter() - started_at) * 1000, 3),
+        )
+
+    @staticmethod
+    def _should_rerank(
+        candidates: list[tuple[sqlite3.Row, float, str]],
+        confidence: float,
+    ) -> tuple[bool, str]:
+        if len(candidates) < 2:
+            return False, "fewer than two candidates"
+        if confidence < 0.72:
+            return True, "low confidence"
+
+        scores = sorted((float(candidate[1]) for candidate in candidates), reverse=True)
+        top_score = max(abs(scores[0]), 0.1)
+        margin = (scores[0] - scores[1]) / top_score
+        if margin <= 0.12:
+            return True, "small top-candidate margin"
+        return False, "high confidence with a clear top candidate"
+
+    @staticmethod
+    def _candidate_confidence(candidates: list[tuple[sqlite3.Row, float, str]], terms: tuple[str, ...]) -> float:
+        if not candidates:
+            return 0.0
+        best_confidence = 0.0
+        meaningful_terms = {term.casefold() for term in terms if len(term) > 2}
+        for row, score, matched_by in candidates:
+            candidate_terms = {
+                term.casefold()
+                for term in TOKEN.findall(f"{row['name']} {row['content']}")
+            }
+            coverage = len(meaningful_terms & candidate_terms) / max(len(meaningful_terms), 1)
+            score_signal = max(0.0, min(float(score), 1.0))
+            if "semantic similarity" in matched_by:
+                confidence = 0.65 * score_signal + 0.35 * coverage
+            else:
+                confidence = 0.65 * coverage + 0.35 * score_signal
+            best_confidence = max(best_confidence, confidence)
+        return best_confidence
+
+    def _expand_query(self, query: str) -> str:
+        stop_words = {
+            "a", "an", "and", "are", "about", "can", "could", "find", "for", "from",
+            "get", "i", "in", "into", "is", "me", "of", "on", "please", "related",
+            "show", "similar", "the", "to", "with", "would", "you",
+        }
+        synonym_groups = (
+            {"automobile", "car", "vehicle", "driving"},
+            {"meeting", "discussion", "minutes"},
+            {"budget", "cost", "expense", "spending"},
+            {"resume", "cv", "curriculum"},
+            {"schedule", "calendar", "timeline", "plan"},
+            {"photo", "image", "picture", "photograph"},
+            {"report", "summary", "overview"},
+        )
+        original_terms = TOKEN.findall(query)
+        terms = [term for term in original_terms if term.casefold() not in stop_words]
+        present = {term.casefold() for term in terms}
+        for group in synonym_groups:
+            if present & group:
+                terms.extend(sorted(group - present))
+        deduplicated = list(dict.fromkeys(term.casefold() for term in terms))
+        return " ".join(deduplicated)[:500]
 
     @staticmethod
     def _filename_candidates(connection: sqlite3.Connection, terms: tuple[str, ...]):
@@ -405,17 +649,26 @@ class IndexStore:
         try:
             rows = connection.execute(
                 """
-                SELECT documents.*, bm25(document_fts, 5.0, 0.0, 1.0) AS rank
-                FROM document_fts JOIN documents ON documents.id = document_fts.rowid
-                WHERE document_fts MATCH ? ORDER BY rank
+                SELECT documents.*, bm25(chunk_fts, 5.0, 0.0, 1.0) AS rank
+                FROM chunk_fts
+                JOIN file_chunks ON file_chunks.id = chunk_fts.rowid
+                JOIN documents ON documents.id = file_chunks.document_id
+                WHERE chunk_fts MATCH ?
+                ORDER BY rank
                 """,
                 (expression,),
             ).fetchall()
         except sqlite3.OperationalError:
             return []
+        best_matches: dict[int, tuple[sqlite3.Row, float]] = {}
+        for row in rows:
+            score = 1.0 / (1.0 + abs(float(row["rank"])))
+            current = best_matches.get(row["id"])
+            if current is None or score > current[1]:
+                best_matches[row["id"]] = (row, score)
         return [
-            (row, 1.0 / (1.0 + abs(float(row["rank"]))), "full-text keyword")
-            for row in rows
+            (row, score, "full-text keyword")
+            for row, score in best_matches.values()
         ]
 
     def _semantic_search_candidates(self, connection: sqlite3.Connection, query: str):
@@ -424,15 +677,17 @@ class IndexStore:
             return []
         rows = connection.execute(
             """
-            SELECT documents.*, semantic_embeddings.dimension, semantic_embeddings.vector
-            FROM semantic_embeddings
-            JOIN documents ON documents.id = semantic_embeddings.document_id
+                 SELECT documents.*, file_chunks.id AS chunk_id, file_chunks.content AS chunk_content,
+                     chunk_embeddings.dimension, chunk_embeddings.vector
+                 FROM chunk_embeddings
+                 JOIN file_chunks ON file_chunks.id = chunk_embeddings.chunk_id
+                 JOIN documents ON documents.id = file_chunks.document_id
             """
         ).fetchall()
         query_norm = sum(value * value for value in query_vector) ** 0.5
         if query_norm == 0:
             return []
-        candidates = []
+        best_matches: dict[int, tuple[sqlite3.Row, float]] = {}
         for row in rows:
             if row["dimension"] != len(query_vector):
                 continue
@@ -441,8 +696,14 @@ class IndexStore:
             if document_norm == 0:
                 continue
             similarity = sum(a * b for a, b in zip(query_vector, document_vector)) / (query_norm * document_norm)
-            candidates.append((row, (similarity + 1.0) / 2.0, "semantic similarity"))
-        return candidates
+            normalized_similarity = (similarity + 1.0) / 2.0
+            current = best_matches.get(row["id"])
+            if current is None or normalized_similarity > current[1]:
+                best_matches[row["id"]] = (row, normalized_similarity)
+        return [
+            (row, score, "semantic similarity")
+            for row, score in best_matches.values()
+        ]
 
     def _hybrid_candidates(self, connection: sqlite3.Connection, terms: tuple[str, ...], query: str):
         filename = self._filename_candidates(connection, terms)
@@ -575,12 +836,24 @@ class IndexStore:
                 """,
                 (user_id,),
             ).fetchall()
+            feedback_summary = connection.execute(
+                """
+                SELECT feedback, COUNT(*) AS event_count
+                FROM recommendation_events
+                WHERE user_id = ? AND feedback IS NOT NULL
+                GROUP BY feedback
+                """,
+                (user_id,),
+            ).fetchall()
 
         event_count = profile["event_count"]
         extensions = profile["extensions"]
         return {
             "user_id": user_id,
             "total_access_events": event_count,
+            "feedback_summary": {
+                row["feedback"]: row["event_count"] for row in feedback_summary
+            },
             "frequently_accessed_files": [dict(row) for row in frequent_files],
             "preferred_extensions": [
                 {"extension": extension, "access_count": count, "share": round(count / event_count, 3)}
@@ -595,4 +868,22 @@ class IndexStore:
                 {"weekday": weekday, "access_count": count}
                 for weekday, count in sorted(profile["weekdays"].items(), key=lambda item: (-item[1], item[0]))
             ],
+        }
+
+    @staticmethod
+    def _feedback_signals(connection: sqlite3.Connection, user_id: str):
+        rows = connection.execute(
+            """
+            SELECT document_id,
+                   SUM(CASE WHEN feedback = 'relevant' THEN 1 ELSE 0 END) AS positive_count,
+                   SUM(CASE WHEN feedback = 'not_relevant' THEN 1 ELSE 0 END) AS negative_count
+            FROM recommendation_events
+            WHERE user_id = ? AND feedback IS NOT NULL
+            GROUP BY document_id
+            """,
+            (user_id,),
+        ).fetchall()
+        return {
+            row["document_id"]: (row["positive_count"], row["negative_count"])
+            for row in rows
         }

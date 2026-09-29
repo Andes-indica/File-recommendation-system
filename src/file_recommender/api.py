@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -24,6 +25,12 @@ class SearchRequest(BaseModel):
 class AccessRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
     path: str
+
+
+class FeedbackRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    recommendation_id: int = Field(gt=0)
+    feedback: Literal["relevant", "not_relevant"]
 
 
 def create_app(store: IndexStore | None = None) -> FastAPI:
@@ -59,17 +66,25 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
     def index_directory(request: IndexRequest):
         try:
             return index.index_directory(request.directory)
-        except (OSError, ValueError) as error:
+        except (OSError, RuntimeError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
     @application.post("/search")
     def search(request: SearchRequest):
-        plan, results = index.search(request.query, request.user_id, request.limit)
+        execution = index.search_with_diagnostics(request.query, request.user_id, request.limit)
         return {
             "query": request.query,
-            "strategy": plan.strategy,
-            "routing_reason": plan.reason,
-            "results": [result.__dict__ for result in results],
+            "strategy": execution.plan.strategy,
+            "routing_reason": execution.plan.reason,
+            "confidence": execution.confidence,
+            "expanded_query": execution.expanded_query,
+            "diagnostics": {
+                "candidate_count": execution.candidate_count,
+                "reranked": execution.reranked,
+                "rerank_reason": execution.rerank_reason,
+                "latency_ms": execution.latency_ms,
+            },
+            "results": [result.__dict__ for result in execution.results],
         }
 
     @application.post("/access", status_code=204)
@@ -82,6 +97,17 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
         if not user_id or len(user_id) > 128:
             raise HTTPException(status_code=400, detail="User id must be between 1 and 128 characters.")
         return index.get_user_profile(user_id)
+
+    @application.post("/feedback")
+    def record_feedback(request: FeedbackRequest):
+        recorded = index.record_feedback(
+            request.user_id,
+            request.recommendation_id,
+            request.feedback,
+        )
+        if not recorded:
+            raise HTTPException(status_code=404, detail="Recommendation not found for this user.")
+        return {"recorded": True}
 
     return application
 
