@@ -9,6 +9,10 @@ METADATA_FILTER = re.compile(
     re.IGNORECASE,
 )
 FILENAME_INTENT = re.compile(r"\b(?:file|filename|named)\b", re.IGNORECASE)
+SEMANTIC_INTENT = re.compile(
+    r"\b(?:similar to|related to|about|conceptually|meaning of|in other words)\b",
+    re.IGNORECASE,
+)
 TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
 
 
@@ -19,7 +23,7 @@ class RetrievalPlan:
     terms: tuple[str, ...]
 
 
-def plan_query(query: str) -> RetrievalPlan:
+def plan_query(query: str, semantic_available: bool = False) -> RetrievalPlan:
     """Select a low-cost retrieval strategy from query shape and explicit filters."""
     cleaned = query.strip()
     terms = tuple(TOKEN.findall(cleaned))
@@ -35,6 +39,13 @@ def plan_query(query: str) -> RetrievalPlan:
         return RetrievalPlan(
             "filename",
             "The query points to a specific name or file extension.",
+            terms,
+        )
+
+    if semantic_available and SEMANTIC_INTENT.search(cleaned):
+        return RetrievalPlan(
+            "semantic",
+            "The query asks for related meaning rather than exact wording.",
             terms,
         )
 

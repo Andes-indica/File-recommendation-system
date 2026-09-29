@@ -2,16 +2,22 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 import re
 import sqlite3
+import struct
+from typing import Protocol, Sequence
 
 from .planner import RetrievalPlan, plan_query
 
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst"}
 MAX_FILE_BYTES = 1024 * 1024
-WORD = re.compile(r"[\w.-]+", re.UNICODE)
+
+class EmbeddingProvider(Protocol):
+    def encode(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        """Return one dense vector for each input text."""
 
 
 @dataclass(frozen=True)
@@ -26,9 +32,10 @@ class SearchResult:
 
 
 class IndexStore:
-    def __init__(self, database_path: str | Path):
+    def __init__(self, database_path: str | Path, embedder: EmbeddingProvider | None = None):
         self.database_path = Path(database_path).expanduser().resolve()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.embedder = embedder
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -65,8 +72,22 @@ class IndexStore:
                 );
                 CREATE INDEX IF NOT EXISTS access_user_document
                     ON access_events(user_id, document_id);
+                CREATE TABLE IF NOT EXISTS semantic_embeddings (
+                    document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+                    content_hash TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    dimension INTEGER NOT NULL,
+                    vector BLOB NOT NULL
+                );
                 """
             )
+            embedding_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(semantic_embeddings)")
+            }
+            if "model_id" not in embedding_columns:
+                connection.execute(
+                    "ALTER TABLE semantic_embeddings ADD COLUMN model_id TEXT NOT NULL DEFAULT 'legacy'"
+                )
 
     def index_directory(self, directory: str | Path) -> dict[str, int]:
         root = Path(directory).expanduser().resolve(strict=True)
@@ -76,6 +97,7 @@ class IndexStore:
         indexed = 0
         skipped = 0
         seen_paths: set[str] = set()
+        embedding_jobs: list[tuple[int, str, str]] = []
         with self._connect() as connection:
             for path in root.rglob("*"):
                 if not path.is_file() or path.is_symlink():
@@ -124,12 +146,52 @@ class IndexStore:
                 document_id = connection.execute(
                     "SELECT id FROM documents WHERE path = ?", (resolved_path,)
                 ).fetchone()["id"]
+                content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                if self.embedder is not None:
+                    cached = connection.execute(
+                        "SELECT content_hash, model_id FROM semantic_embeddings WHERE document_id = ?",
+                        (document_id,),
+                    ).fetchone()
+                    model_id = getattr(self.embedder, "model_id", type(self.embedder).__qualname__)
+                    if (
+                        cached is None
+                        or cached["content_hash"] != content_hash
+                        or cached["model_id"] != model_id
+                    ):
+                        embedding_jobs.append((document_id, content_hash, f"{path.name}\n{content}"))
                 connection.execute("DELETE FROM document_fts WHERE rowid = ?", (document_id,))
                 connection.execute(
                     "INSERT INTO document_fts(rowid, name, path, content) VALUES (?, ?, ?, ?)",
                     (document_id, path.name, resolved_path, content),
                 )
                 indexed += 1
+
+            if embedding_jobs:
+                vectors = self.embedder.encode([job[2] for job in embedding_jobs])
+                if len(vectors) != len(embedding_jobs):
+                    raise ValueError("Embedding provider returned an unexpected number of vectors.")
+                for (document_id, content_hash, _), vector in zip(embedding_jobs, vectors):
+                    values = tuple(float(value) for value in vector)
+                    if not values:
+                        raise ValueError("Embedding provider returned an empty vector.")
+                    connection.execute(
+                        """
+                        INSERT INTO semantic_embeddings(document_id, content_hash, model_id, dimension, vector)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(document_id) DO UPDATE SET
+                            content_hash = excluded.content_hash,
+                            model_id = excluded.model_id,
+                            dimension = excluded.dimension,
+                            vector = excluded.vector
+                        """,
+                        (
+                            document_id,
+                            content_hash,
+                            getattr(self.embedder, "model_id", type(self.embedder).__qualname__),
+                            len(values),
+                            struct.pack(f"<{len(values)}f", *values),
+                        ),
+                    )
 
             existing = connection.execute(
                 "SELECT id, path FROM documents WHERE source_root = ?", (str(root),)
@@ -155,7 +217,7 @@ class IndexStore:
             return True
 
     def search(self, query: str, user_id: str | None = None, limit: int = 10) -> tuple[RetrievalPlan, list[SearchResult]]:
-        plan = plan_query(query)
+        plan = plan_query(query, semantic_available=self.embedder is not None)
         if not plan.terms:
             return plan, []
 
@@ -166,8 +228,10 @@ class IndexStore:
                 ranked = self._filename_candidates(connection, plan.terms)
             elif plan.strategy == "keyword":
                 ranked = self._keyword_candidates(connection, plan.terms)
+            elif plan.strategy == "semantic":
+                ranked = self._semantic_search_candidates(connection, query)
             else:
-                ranked = self._hybrid_candidates(connection, plan.terms)
+                ranked = self._hybrid_candidates(connection, plan.terms, query)
 
             access = self._access_signals(connection, user_id) if user_id else {}
             results: list[tuple[SearchResult, int, str]] = []
@@ -254,18 +318,44 @@ class IndexStore:
             for row in rows
         ]
 
-    @classmethod
-    def _hybrid_candidates(cls, connection: sqlite3.Connection, terms: tuple[str, ...]):
-        filename = cls._filename_candidates(connection, terms)
-        keyword = cls._keyword_candidates(connection, terms)
+    def _semantic_search_candidates(self, connection: sqlite3.Connection, query: str):
+        query_vector = tuple(float(value) for value in self.embedder.encode([query])[0])
+        if not query_vector:
+            return []
+        rows = connection.execute(
+            """
+            SELECT documents.*, semantic_embeddings.dimension, semantic_embeddings.vector
+            FROM semantic_embeddings
+            JOIN documents ON documents.id = semantic_embeddings.document_id
+            """
+        ).fetchall()
+        query_norm = sum(value * value for value in query_vector) ** 0.5
+        if query_norm == 0:
+            return []
+        candidates = []
+        for row in rows:
+            if row["dimension"] != len(query_vector):
+                continue
+            document_vector = struct.unpack(f"<{row['dimension']}f", row["vector"])
+            document_norm = sum(value * value for value in document_vector) ** 0.5
+            if document_norm == 0:
+                continue
+            similarity = sum(a * b for a, b in zip(query_vector, document_vector)) / (query_norm * document_norm)
+            candidates.append((row, (similarity + 1.0) / 2.0, "semantic similarity"))
+        return candidates
+
+    def _hybrid_candidates(self, connection: sqlite3.Connection, terms: tuple[str, ...], query: str):
+        filename = self._filename_candidates(connection, terms)
+        keyword = self._keyword_candidates(connection, terms)
+        semantic = self._semantic_search_candidates(connection, query) if self.embedder else []
         fused: dict[int, tuple[sqlite3.Row, float, set[str]]] = {}
-        for candidates in (filename, keyword):
+        for candidates in (filename, keyword, semantic):
             for row, score, label in candidates:
                 current = fused.get(row["id"], (row, 0.0, set()))
                 current[2].add(label)
                 fused[row["id"]] = (row, current[1] + score, current[2])
         return [
-            (row, score, "filename and full-text" if len(labels) > 1 else next(iter(labels)))
+            (row, score, ", ".join(sorted(labels)))
             for row, score, labels in fused.values()
         ]
 

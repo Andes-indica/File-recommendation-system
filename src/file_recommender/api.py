@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from .embeddings import SentenceTransformerEmbedder
 from .index import IndexStore
 
 
@@ -26,7 +27,9 @@ class AccessRequest(BaseModel):
 
 def create_app(store: IndexStore | None = None) -> FastAPI:
     database_path = os.environ.get("FILE_RECOMMENDER_DB", ".file-recommender/index.sqlite3")
-    index = store or IndexStore(database_path)
+    model_id = os.environ.get("FILE_RECOMMENDER_MODEL")
+    embedder = SentenceTransformerEmbedder(model_id) if model_id else None
+    index = store or IndexStore(database_path, embedder=embedder)
     application = FastAPI(title="Intelligent File Recommendation API", version="0.1.0")
 
     @application.get("/health")

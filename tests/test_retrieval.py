@@ -1,3 +1,5 @@
+import re
+
 from fastapi.testclient import TestClient
 
 from file_recommender.api import create_app
@@ -5,11 +7,33 @@ from file_recommender.index import IndexStore
 from file_recommender.planner import plan_query
 
 
+class ConceptEmbedder:
+    model_id = "test-concepts-v1"
+
+    def __init__(self):
+        self.encoded_texts = 0
+
+    def encode(self, texts):
+        vectors = []
+        for text in texts:
+            normalized = text.casefold()
+            self.encoded_texts += 1
+            if re.search(r"\b(?:car|automobile|vehicle|driving)\b", normalized):
+                vectors.append([1.0, 0.0, 0.0])
+            elif re.search(r"\b(?:garden|flower|plant)\b", normalized):
+                vectors.append([0.0, 1.0, 0.0])
+            else:
+                vectors.append([0.0, 0.0, 1.0])
+        return vectors
+
+
 def test_planner_routes_queries_by_intent():
     assert plan_query("quarterly report type:md").strategy == "metadata"
     assert plan_query("filename project-plan.md").strategy == "filename"
     assert plan_query("meeting notes").strategy == "keyword"
     assert plan_query("find the launch meeting notes").strategy == "hybrid"
+    assert plan_query("similar to driving", semantic_available=True).strategy == "semantic"
+    assert plan_query("similar to driving").strategy == "hybrid"
 
 
 def test_index_and_search_return_explainable_recommendations(tmp_path):
@@ -62,3 +86,38 @@ def test_metadata_filters_by_extension(tmp_path):
 
     assert plan.strategy == "metadata"
     assert [result.name for result in results] == ["notes.md"]
+
+
+def test_semantic_search_finds_related_meaning_and_caches_embeddings(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "vehicle-guide.md").write_text("Automobile maintenance and safe travel", encoding="utf-8")
+    (source / "garden-guide.md").write_text("Flowers, plants, and garden care", encoding="utf-8")
+    embedder = ConceptEmbedder()
+    store = IndexStore(tmp_path / "index.sqlite3", embedder=embedder)
+
+    store.index_directory(source)
+    assert embedder.encoded_texts == 2
+    store.index_directory(source)
+    assert embedder.encoded_texts == 2
+
+    plan, results = store.search("similar to driving")
+
+    assert plan.strategy == "semantic"
+    assert results[0].name == "vehicle-guide.md"
+    assert "semantic similarity" in results[0].explanation
+
+
+def test_hybrid_search_fuses_semantic_candidates(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "vehicle-guide.md").write_text("Automobile maintenance and safe travel", encoding="utf-8")
+    (source / "garden-guide.md").write_text("Flowers, plants, and garden care", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3", embedder=ConceptEmbedder())
+    store.index_directory(source)
+
+    plan, results = store.search("find guidance for driving safely")
+
+    assert plan.strategy == "hybrid"
+    assert results[0].name == "vehicle-guide.md"
+    assert "semantic similarity" in results[0].explanation
