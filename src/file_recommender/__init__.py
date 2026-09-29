@@ -1,0 +1,1 @@
+"""Local-first intelligent file recommendation service."""
