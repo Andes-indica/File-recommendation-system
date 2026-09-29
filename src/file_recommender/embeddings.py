@@ -23,3 +23,21 @@ class SentenceTransformerEmbedder:
             show_progress_bar=False,
         )
         return vectors.tolist()
+
+
+class SentenceTransformerReranker:
+    def __init__(self, model_id: str):
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError as error:
+            raise RuntimeError(
+                "Install the semantic extra with `pip install -e '.[semantic]'` "
+                "to enable cross-encoder reranking."
+            ) from error
+        self.model_id = model_id
+        self._model = CrossEncoder(model_id)
+
+    def score(self, query: str, documents: Sequence[str]) -> list[float]:
+        pairs = [(query, document) for document in documents]
+        scores = self._model.predict(pairs, show_progress_bar=False)
+        return [float(score) for score in scores]

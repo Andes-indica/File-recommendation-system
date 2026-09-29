@@ -6,8 +6,9 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .embeddings import SentenceTransformerEmbedder
+from .embeddings import SentenceTransformerEmbedder, SentenceTransformerReranker
 from .index import IndexStore
+from .query_understanding import OpenAIQueryAnalyzer
 
 
 class IndexRequest(BaseModel):
@@ -27,9 +28,27 @@ class AccessRequest(BaseModel):
 
 def create_app(store: IndexStore | None = None) -> FastAPI:
     database_path = os.environ.get("FILE_RECOMMENDER_DB", ".file-recommender/index.sqlite3")
-    model_id = os.environ.get("FILE_RECOMMENDER_MODEL")
-    embedder = SentenceTransformerEmbedder(model_id) if model_id else None
-    index = store or IndexStore(database_path, embedder=embedder)
+    if store is None:
+        model_id = os.environ.get("FILE_RECOMMENDER_MODEL")
+        reranker_model_id = os.environ.get("FILE_RECOMMENDER_RERANKER_MODEL")
+        llm_api_key = os.environ.get("FILE_RECOMMENDER_LLM_API_KEY")
+        llm_model = os.environ.get("FILE_RECOMMENDER_LLM_MODEL")
+        llm_base_url = os.environ.get("FILE_RECOMMENDER_LLM_BASE_URL", "https://api.openai.com/v1")
+        embedder = SentenceTransformerEmbedder(model_id) if model_id else None
+        reranker = SentenceTransformerReranker(reranker_model_id) if reranker_model_id else None
+        query_analyzer = (
+            OpenAIQueryAnalyzer(llm_api_key, llm_model, llm_base_url)
+            if llm_api_key and llm_model
+            else None
+        )
+        index = IndexStore(
+            database_path,
+            embedder=embedder,
+            reranker=reranker,
+            query_analyzer=query_analyzer,
+        )
+    else:
+        index = store
     application = FastAPI(title="Intelligent File Recommendation API", version="0.1.0")
 
     @application.get("/health")

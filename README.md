@@ -42,6 +42,7 @@ Only `.txt`, `.md`, and `.rst` files up to 1 MiB are indexed. The database defau
 - Full-text keyword search backed by SQLite FTS5.
 - Hybrid filename and full-text candidate ranking for longer natural-language queries; semantic candidates join when embeddings are enabled.
 - Optional semantic search through a local Sentence Transformers model, with vectors cached by file content and model id.
+- Optional cross-encoder reranking of up to the top 30 retrieved candidates.
 - Optional personalization from explicit file-access events, with a short explanation attached to each result.
 
 Enable local semantic retrieval by installing the optional dependency and setting a model before starting the API:
@@ -49,11 +50,21 @@ Enable local semantic retrieval by installing the optional dependency and settin
 ```bash
 pip install -e '.[semantic]'
 export FILE_RECOMMENDER_MODEL=sentence-transformers/all-MiniLM-L6-v2
+export FILE_RECOMMENDER_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 uvicorn file_recommender.api:app --reload
 ```
 
-Sentence Transformers downloads the selected model when enabled. The first indexing pass embeds supported files; unchanged files reuse cached vectors. Queries asking for related meaning (for example, `similar to driving`) use semantic-only retrieval. Longer natural-language queries fuse semantic, filename, and keyword candidates. Without `FILE_RECOMMENDER_MODEL`, semantic retrieval remains disabled.
+Sentence Transformers downloads each selected model when enabled. The first indexing pass embeds supported files; unchanged files reuse cached vectors. Queries asking for related meaning (for example, `similar to driving`) use semantic-only retrieval. Longer natural-language queries fuse semantic, filename, and keyword candidates. When `FILE_RECOMMENDER_RERANKER_MODEL` is set, a cross-encoder reranks the top 30 candidates and its result is reflected in the explanation. Without these settings, semantic retrieval and reranking remain disabled.
 
-Cross-encoder reranking, LLM-based query reasoning, and feedback-driven profile learning remain follow-up increments.
+Enable optional LLM query understanding by configuring an OpenAI-compatible chat-completions endpoint:
+
+```bash
+export FILE_RECOMMENDER_LLM_API_KEY='your-provider-key'
+export FILE_RECOMMENDER_LLM_MODEL='your-model-name'
+export FILE_RECOMMENDER_LLM_BASE_URL='https://api.openai.com/v1'
+uvicorn file_recommender.api:app --reload
+```
+
+The analyzer runs only for longer queries already routed to hybrid search, sends only the user query (never indexed file contents), and has a 3-second timeout. Its route proposal must match capabilities enabled in the app; unsupported or failed analyses fall back to the local planner. Use a provider whose data handling is appropriate for your queries. Feedback-driven profile learning remains a follow-up increment.
 
 Run tests with `pytest`.

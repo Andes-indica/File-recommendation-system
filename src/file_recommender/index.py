@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -10,6 +11,7 @@ import struct
 from typing import Protocol, Sequence
 
 from .planner import RetrievalPlan, plan_query
+from .query_understanding import QueryAnalysis
 
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst"}
@@ -18,6 +20,16 @@ MAX_FILE_BYTES = 1024 * 1024
 class EmbeddingProvider(Protocol):
     def encode(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
         """Return one dense vector for each input text."""
+
+
+class RerankingProvider(Protocol):
+    def score(self, query: str, documents: Sequence[str]) -> Sequence[float]:
+        """Return a relevance score for each query-document pair."""
+
+
+class QueryAnalyzer(Protocol):
+    def analyze(self, query: str) -> QueryAnalysis:
+        """Return a constrained retrieval query and strategy proposal."""
 
 
 @dataclass(frozen=True)
@@ -32,10 +44,18 @@ class SearchResult:
 
 
 class IndexStore:
-    def __init__(self, database_path: str | Path, embedder: EmbeddingProvider | None = None):
+    def __init__(
+        self,
+        database_path: str | Path,
+        embedder: EmbeddingProvider | None = None,
+        reranker: RerankingProvider | None = None,
+        query_analyzer: QueryAnalyzer | None = None,
+    ):
         self.database_path = Path(database_path).expanduser().resolve()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedder = embedder
+        self.reranker = reranker
+        self.query_analyzer = query_analyzer
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -221,17 +241,43 @@ class IndexStore:
         if not plan.terms:
             return plan, []
 
+        retrieval_query = query
+        if self.query_analyzer is not None and plan.strategy == "hybrid" and len(plan.terms) >= 6:
+            try:
+                analysis = self.query_analyzer.analyze(query)
+                analyzed_plan = plan_query(
+                    analysis.retrieval_query,
+                    semantic_available=self.embedder is not None,
+                )
+                supported_strategies = {"filename", "keyword", "hybrid"}
+                if self.embedder is not None:
+                    supported_strategies.add("semantic")
+                if analyzed_plan.strategy == "metadata":
+                    supported_strategies.add("metadata")
+                if (
+                    analysis.strategy in supported_strategies
+                    and analyzed_plan.terms
+                    and (analysis.strategy != "metadata" or analyzed_plan.strategy == "metadata")
+                ):
+                    retrieval_query = analysis.retrieval_query
+                    plan = RetrievalPlan(analysis.strategy, analysis.reason, analyzed_plan.terms)
+            except (RuntimeError, ValueError, KeyError, TypeError):
+                pass
+
         with self._connect() as connection:
             if plan.strategy == "metadata":
-                ranked = self._metadata_candidates(connection, query)
+                ranked = self._metadata_candidates(connection, retrieval_query)
             elif plan.strategy == "filename":
                 ranked = self._filename_candidates(connection, plan.terms)
             elif plan.strategy == "keyword":
                 ranked = self._keyword_candidates(connection, plan.terms)
             elif plan.strategy == "semantic":
-                ranked = self._semantic_search_candidates(connection, query)
+                ranked = self._semantic_search_candidates(connection, retrieval_query)
             else:
-                ranked = self._hybrid_candidates(connection, plan.terms, query)
+                ranked = self._hybrid_candidates(connection, plan.terms, retrieval_query)
+
+            if self.reranker is not None and ranked:
+                ranked = self._rerank_candidates(retrieval_query, ranked)
 
             access = self._access_signals(connection, user_id) if user_id else {}
             results: list[tuple[SearchResult, int, str]] = []
@@ -273,6 +319,22 @@ class IndexStore:
             if matched:
                 ranked.append((row, matched / len(terms), "filename"))
         return ranked
+
+    def _rerank_candidates(self, query: str, candidates: list[tuple[sqlite3.Row, float, str]]):
+        candidate_limit = 30
+        initial = sorted(candidates, key=lambda item: item[1], reverse=True)
+        rerankable = initial[:candidate_limit]
+        texts = [f"{row['name']}\n{row['content'][:4000]}" for row, _, _ in rerankable]
+        scores = self.reranker.score(query, texts)
+        if len(scores) != len(rerankable):
+            raise ValueError("Reranker returned an unexpected number of scores.")
+
+        reranked = []
+        for (row, _, matched_by), raw_score in zip(rerankable, scores):
+            score = float(raw_score)
+            normalized_score = 1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, score))))
+            reranked.append((row, normalized_score, f"{matched_by}, cross-encoder reranking"))
+        return reranked
 
     @staticmethod
     def _metadata_candidates(connection: sqlite3.Connection, query: str):
