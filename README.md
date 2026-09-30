@@ -19,6 +19,60 @@ uvicorn file_recommender.api:app --reload
 
 The API listens on `http://127.0.0.1:8000`; interactive API documentation is at `/docs`.
 
+### Authentication and File Permissions
+
+The API remains open for local development when `FILE_RECOMMENDER_AUTH_TOKENS` is unset. To enable bearer authentication, configure a JSON map from user IDs to unique private tokens of at least 16 characters before starting the service:
+
+```bash
+export FILE_RECOMMENDER_AUTH_TOKENS='{"alice":"replace-with-a-long-random-token","bob":"replace-with-another-long-random-token"}'
+uvicorn file_recommender.api:app --reload
+```
+
+Use a secret manager or private environment injection outside local development; never commit real tokens. Authenticated indexing makes the caller the file owner. Search and file-open events are scoped to that principal, and any supplied `user_id` must match it. Files owned by another user are skipped during re-indexing rather than overwritten.
+
+Owners can grant and revoke read access for another configured user with `POST /permissions` and `DELETE /permissions`:
+
+```bash
+curl -X POST http://127.0.0.1:8000/permissions \
+  -H 'Authorization: Bearer <alice-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/path/to/your/files/plan.md","target_user_id":"bob"}'
+
+curl -X DELETE http://127.0.0.1:8000/permissions \
+  -H 'Authorization: Bearer <alice-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/path/to/your/files/plan.md","target_user_id":"bob"}'
+```
+
+This is opt-in local authentication with static configured tokens, not OAuth/OIDC or a managed identity/token lifecycle. Existing documents without ACL entries are hidden in authenticated mode until indexed by an authenticated owner.
+
+### Authentication and File Permissions
+
+Local development remains open when `FILE_RECOMMENDER_AUTH_TOKENS` is unset. To enable bearer authentication, configure a JSON object mapping user IDs to long, private tokens before starting the API:
+
+```bash
+export FILE_RECOMMENDER_AUTH_TOKENS='{"alice":"replace-with-a-long-random-token","bob":"replace-with-another-long-random-token"}'
+uvicorn file_recommender.api:app --reload
+```
+
+In this mode, authenticated indexing makes the caller the file owner. Search is filtered to files the principal owns or has read access to before confidence scoring and reranking. User IDs supplied in request bodies must match the bearer-token principal; they cannot be used to impersonate another configured user.
+
+```bash
+curl -X POST http://127.0.0.1:8000/index \
+  -H 'Authorization: Bearer replace-with-a-long-random-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"directory":"/path/to/your/files"}'
+
+curl -X POST http://127.0.0.1:8000/permissions \
+  -H 'Authorization: Bearer replace-with-a-long-random-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/path/to/your/files/plan.md","target_user_id":"bob"}'
+```
+
+The owner can revoke the read grant with `DELETE /permissions` using the same JSON body. Only configured users can receive grants. Existing indexed files without ACL records are not visible in authenticated mode until an authenticated user indexes them and becomes their owner.
+
+This is local opt-in authentication: tokens are static configuration values, with no expiry, self-service rotation, external identity provider, or production secret manager. Use HTTPS and a proper identity/token lifecycle before deployment beyond a trusted local environment.
+
 Index a local directory:
 
 ```bash

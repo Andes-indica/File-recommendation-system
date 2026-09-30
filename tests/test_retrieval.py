@@ -284,6 +284,119 @@ def test_audit_events_are_append_only_and_listing_can_be_disabled(tmp_path, monk
             connection.execute("DELETE FROM audit_events WHERE id = 1")
 
 
+def test_authenticated_file_isolation_sharing_and_revocation(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "FILE_RECOMMENDER_AUTH_TOKENS",
+        json.dumps({"alice": "alice-test-token", "bob": "bob-test-token-123"}),
+    )
+    source = tmp_path / "shared-source"
+    source.mkdir()
+    document = source / "owner-only.md"
+    document.write_text("confidential deployment runbook", encoding="utf-8")
+    reranker = PreferredTextReranker()
+    store = IndexStore(tmp_path / "index.sqlite3", reranker=reranker)
+    client = TestClient(create_app(store))
+    alice_headers = {"Authorization": "Bearer alice-test-token"}
+    bob_headers = {"Authorization": "Bearer bob-test-token-123"}
+
+    assert client.post("/index", json={"directory": str(source)}).status_code == 401
+    indexed = client.post("/index", json={"directory": str(source)}, headers=alice_headers)
+    assert indexed.status_code == 200
+    assert indexed.json()["indexed"] == 1
+
+    alice_search = client.post(
+        "/search",
+        json={"query": "confidential deployment runbook", "user_id": "alice"},
+        headers=alice_headers,
+    )
+    assert alice_search.status_code == 200
+    assert alice_search.json()["results"][0]["name"] == "owner-only.md"
+    recommendation_id = alice_search.json()["results"][0]["recommendation_id"]
+
+    bob_search = client.post(
+        "/search",
+        json={"query": "confidential deployment runbook", "user_id": "bob"},
+        headers=bob_headers,
+    )
+    assert bob_search.status_code == 200
+    assert bob_search.json()["results"] == []
+    assert reranker.calls == 0
+    assert client.post(
+        "/search",
+        json={"query": "confidential deployment runbook", "user_id": "alice"},
+        headers=bob_headers,
+    ).status_code == 403
+    assert client.get("/users/alice/profile", headers=bob_headers).status_code == 403
+    assert client.post(
+        "/feedback",
+        json={"user_id": "alice", "recommendation_id": recommendation_id, "feedback": "relevant"},
+        headers=bob_headers,
+    ).status_code == 403
+    assert client.post(
+        "/access",
+        json={"user_id": "bob", "path": str(document)},
+        headers=bob_headers,
+    ).status_code == 404
+
+    document.write_text("attacker changed this unauthorized file", encoding="utf-8")
+    bob_reindex = client.post("/index", json={"directory": str(source)}, headers=bob_headers)
+    assert bob_reindex.status_code == 200
+    assert bob_reindex.json()["skipped"] == 1
+    assert client.post(
+        "/search",
+        json={"query": "confidential deployment runbook", "user_id": "alice"},
+        headers=alice_headers,
+    ).json()["results"][0]["name"] == "owner-only.md"
+    assert client.post(
+        "/permissions",
+        json={"path": str(document), "target_user_id": "alice"},
+        headers=bob_headers,
+    ).status_code == 403
+
+    share = client.post(
+        "/permissions",
+        json={"path": str(document), "target_user_id": "bob"},
+        headers=alice_headers,
+    )
+    assert share.status_code == 204
+    shared_search = client.post(
+        "/search",
+        json={"query": "confidential deployment runbook", "user_id": "bob"},
+        headers=bob_headers,
+    )
+    assert shared_search.json()["results"][0]["name"] == "owner-only.md"
+    assert client.post(
+        "/access",
+        json={"user_id": "bob", "path": str(document)},
+        headers=bob_headers,
+    ).status_code == 204
+
+    revoke = client.request(
+        "DELETE",
+        "/permissions",
+        json={"path": str(document), "target_user_id": "bob"},
+        headers=alice_headers,
+    )
+    assert revoke.status_code == 204
+    revoked_search = client.post(
+        "/search",
+        json={"query": "confidential deployment runbook", "user_id": "bob"},
+        headers=bob_headers,
+    )
+    assert revoked_search.json()["results"] == []
+
+
+def test_invalid_auth_token_configuration_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("FILE_RECOMMENDER_AUTH_TOKENS", "not-json")
+
+    with pytest.raises(ValueError, match="JSON object"):
+        create_app(IndexStore(tmp_path / "index.sqlite3"))
+
+    monkeypatch.setenv("FILE_RECOMMENDER_AUTH_TOKENS", json.dumps({"alice": "short", "bob": "short"}))
+    with pytest.raises(ValueError, match="unique tokens of at least 16 characters"):
+        create_app(IndexStore(tmp_path / "index.sqlite3"))
+
+
 def test_query_analysis_refines_query_and_selects_supported_strategy(tmp_path):
     source = tmp_path / "files"
     source.mkdir()

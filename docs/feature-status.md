@@ -18,16 +18,18 @@ The architecture documents describe the target system. This matrix tracks the cu
 | Current working-context personalization | Implemented, caller-supplied | Search accepts optional `context_directory`; indexed files in that directory or descendants receive a small ranking boost. The service does not detect the active editor/workspace automatically. |
 | Feedback loop | Implemented, simple scoring | User-scoped recommendation impressions accept relevant/not-relevant feedback and adjust later file ranking. This is not a trained preference model. |
 | Audit trail | Implemented, local append-only | SQLite records indexing completion, search diagnostics, file access, and feedback. Raw queries, full paths, contents, and tokens are excluded. Listing requires `FILE_RECOMMENDER_AUDIT_TOKEN`. Actor IDs are caller-asserted until authentication is implemented; database triggers are not cryptographic tamper protection. |
+| Bearer authentication | Implemented, opt-in local mode | `FILE_RECOMMENDER_AUTH_TOKENS` maps user IDs to static bearer tokens. When configured, user-scoped routes require a valid principal and reject user-ID impersonation. No expiration, rotation API, OAuth/OIDC, or managed secret storage. |
+| File-level read permissions | Implemented, owner-managed | Authenticated indexing assigns ownership; searches/access are restricted to owner/read grants before reranking. Owners can grant and revoke read access for configured users. No groups, inherited ACLs, or administrative recovery workflow. |
 | Text extraction | Implemented, limited formats | Supports TXT, Markdown, reStructuredText, DOCX, and selectable PDF text with safety limits. Images/OCR, spreadsheets, presentations, and email remain unsupported. |
 | Chunking and vector persistence | Implemented, local SQLite | Deterministic 1,000-character chunks with 150-character overlap; embeddings are cached by chunk content and model ID. |
 | Agent state graph | Not implemented as a graph runtime | Search is a Python pipeline with bounded branches and fallbacks; there is no LangGraph or persisted agent-state execution. |
-| Production storage, permissions, and multi-user security | Planned | SQLite is local development storage. Authentication, authorization/ACL enforcement, PostgreSQL deployment, and shared vector infrastructure are not implemented. The audit listing token is a separate shared local control, not user authentication. |
+| Production storage and hardened multi-user security | Partial / planned | Local bearer authentication and file ACLs are implemented, but SQLite is development storage. Managed identity, token lifecycle, PostgreSQL deployment, shared vector infrastructure, and production key management remain unimplemented. The audit listing token is a separate shared local control. |
 | Retrieval evaluation harness | Implemented, smoke baseline | Runs a labeled local corpus and reports Recall@k, MRR@k, nDCG@k, median/p95 retrieval latency, routing counts, and per-query details. The included four-query corpus is only a functional smoke test, not representative quality evidence. |
 | Representative quality/latency benchmarks | Planned | A larger, diverse, reviewed judgment set, quality regression thresholds, and repeated/warm latency runs are still needed. |
 
 ## Suggested Next Steps
 
-1. Add authentication and enforce file-level permissions before indexing or returning results in a multi-user deployment.
+1. Replace static local tokens with managed identity, secure token lifecycle, and production secret management before multi-user deployment.
 2. Expand the smoke judgments into a reviewed, diverse evaluation set and establish quality regression thresholds before tuning scores.
 3. Add a graph orchestration runtime only if conditional branches, retries, or observability outgrow the current service pipeline.
 4. Add more extractors, such as spreadsheets, presentations, and OCR, with representative fixtures and format-specific safety limits.

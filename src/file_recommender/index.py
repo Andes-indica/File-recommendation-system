@@ -112,6 +112,16 @@ class IndexStore:
                 );
                 CREATE INDEX IF NOT EXISTS file_chunks_document
                     ON file_chunks(document_id, chunk_index);
+                CREATE TABLE IF NOT EXISTS file_permissions (
+                    id INTEGER PRIMARY KEY,
+                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL,
+                    permission TEXT NOT NULL CHECK (permission IN ('read', 'owner')),
+                    created_at TEXT NOT NULL,
+                    UNIQUE(document_id, user_id, permission)
+                );
+                CREATE INDEX IF NOT EXISTS file_permissions_user_document
+                    ON file_permissions(user_id, document_id, permission);
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
                     name,
                     document_id UNINDEXED,
@@ -185,7 +195,11 @@ class IndexStore:
                     "ALTER TABLE semantic_embeddings ADD COLUMN model_id TEXT NOT NULL DEFAULT 'legacy'"
                 )
 
-    def index_directory(self, directory: str | Path) -> dict[str, int]:
+    def index_directory(
+        self,
+        directory: str | Path,
+        owner_user_id: str | None = None,
+    ) -> dict[str, int]:
         root = Path(directory).expanduser().resolve(strict=True)
         if not root.is_dir():
             raise ValueError("The supplied path is not a directory.")
@@ -218,6 +232,17 @@ class IndexStore:
                     continue
 
                 resolved_path = str(path.resolve())
+                existing_document = connection.execute(
+                    "SELECT id FROM documents WHERE path = ?", (resolved_path,)
+                ).fetchone()
+                if existing_document is not None and owner_user_id is not None:
+                    current_owner = connection.execute(
+                        "SELECT user_id FROM file_permissions WHERE document_id = ? AND permission = 'owner'",
+                        (existing_document["id"],),
+                    ).fetchone()
+                    if current_owner is not None and current_owner["user_id"] != owner_user_id:
+                        skipped += 1
+                        continue
                 seen_paths.add(resolved_path)
                 modified_at = datetime.fromtimestamp(stats.st_mtime, timezone.utc).isoformat()
                 connection.execute(
@@ -245,6 +270,16 @@ class IndexStore:
                 document_id = connection.execute(
                     "SELECT id FROM documents WHERE path = ?", (resolved_path,)
                 ).fetchone()["id"]
+                if owner_user_id is not None:
+                    timestamp = datetime.now(timezone.utc).isoformat()
+                    connection.execute(
+                        "INSERT OR IGNORE INTO file_permissions(document_id, user_id, permission, created_at) VALUES (?, ?, 'owner', ?)",
+                        (document_id, owner_user_id, timestamp),
+                    )
+                    connection.execute(
+                        "INSERT OR IGNORE INTO file_permissions(document_id, user_id, permission, created_at) VALUES (?, ?, 'read', ?)",
+                        (document_id, owner_user_id, timestamp),
+                    )
                 chunks = split_into_chunks(content)
                 existing_chunks = connection.execute(
                     "SELECT id, chunk_index, content_hash, content FROM file_chunks WHERE document_id = ? ORDER BY chunk_index",
@@ -321,9 +356,20 @@ class IndexStore:
                         )
 
             existing = connection.execute(
-                "SELECT id, path FROM documents WHERE source_root = ?", (str(root),)
+                """
+                SELECT documents.id, documents.path,
+                       (SELECT user_id FROM file_permissions
+                        WHERE document_id = documents.id AND permission = 'owner' LIMIT 1) AS owner_id
+                FROM documents WHERE source_root = ?
+                """,
+                (str(root),),
             ).fetchall()
-            stale_ids = [row["id"] for row in existing if row["path"] not in seen_paths]
+            stale_ids = [
+                row["id"]
+                for row in existing
+                if row["path"] not in seen_paths
+                and (owner_user_id is None or row["owner_id"] == owner_user_id)
+            ]
             for document_id in stale_ids:
                 connection.execute("DELETE FROM document_fts WHERE rowid = ?", (document_id,))
                 connection.execute("DELETE FROM chunk_fts WHERE document_id = ?", (document_id,))
@@ -331,12 +377,91 @@ class IndexStore:
 
         outcome = {"indexed": indexed, "skipped": skipped, "removed": len(stale_ids)}
         self.record_audit_event(
-            actor_id=None,
+            actor_id=owner_user_id,
             event_type="index.completed",
             resource_type="directory",
             metadata=outcome,
         )
         return outcome
+
+    def get_accessible_document_ids(self, user_id: str) -> set[int]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT document_id FROM file_permissions WHERE user_id = ? AND permission IN ('read', 'owner')",
+                (user_id,),
+            ).fetchall()
+        return {row["document_id"] for row in rows}
+
+    def can_read_path(self, user_id: str, path: str) -> bool:
+        resolved_path = str(Path(path).expanduser().resolve())
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM documents
+                JOIN file_permissions ON file_permissions.document_id = documents.id
+                WHERE documents.path = ? AND file_permissions.user_id = ?
+                  AND file_permissions.permission IN ('read', 'owner')
+                """,
+                (resolved_path, user_id),
+            ).fetchone()
+        return row is not None
+
+    def grant_file_access(self, owner_user_id: str, target_user_id: str, path: str) -> str:
+        resolved_path = str(Path(path).expanduser().resolve())
+        with self._connect() as connection:
+            document = connection.execute(
+                "SELECT id FROM documents WHERE path = ?", (resolved_path,)
+            ).fetchone()
+            if document is None:
+                return "not_found"
+            owner = connection.execute(
+                "SELECT 1 FROM file_permissions WHERE document_id = ? AND user_id = ? AND permission = 'owner'",
+                (document["id"], owner_user_id),
+            ).fetchone()
+            if owner is None:
+                return "forbidden"
+            connection.execute(
+                "INSERT OR IGNORE INTO file_permissions(document_id, user_id, permission, created_at) VALUES (?, ?, 'read', ?)",
+                (document["id"], target_user_id, datetime.now(timezone.utc).isoformat()),
+            )
+            self._insert_audit_event(
+                connection,
+                actor_id=owner_user_id,
+                event_type="file.permission_granted",
+                resource_type="file",
+                resource_id=str(document["id"]),
+                metadata={"target_user_id": target_user_id, "permission": "read"},
+            )
+            return "ok"
+
+    def revoke_file_access(self, owner_user_id: str, target_user_id: str, path: str) -> str:
+        resolved_path = str(Path(path).expanduser().resolve())
+        with self._connect() as connection:
+            document = connection.execute(
+                "SELECT id FROM documents WHERE path = ?", (resolved_path,)
+            ).fetchone()
+            if document is None:
+                return "not_found"
+            owner = connection.execute(
+                "SELECT 1 FROM file_permissions WHERE document_id = ? AND user_id = ? AND permission = 'owner'",
+                (document["id"], owner_user_id),
+            ).fetchone()
+            if owner is None:
+                return "forbidden"
+            result = connection.execute(
+                "DELETE FROM file_permissions WHERE document_id = ? AND user_id = ? AND permission = 'read'",
+                (document["id"], target_user_id),
+            )
+            if result.rowcount:
+                self._insert_audit_event(
+                    connection,
+                    actor_id=owner_user_id,
+                    event_type="file.permission_revoked",
+                    resource_type="file",
+                    resource_id=str(document["id"]),
+                    metadata={"target_user_id": target_user_id, "permission": "read"},
+                )
+            return "ok" if result.rowcount else "not_found"
 
     def record_access(self, user_id: str, path: str) -> bool:
         with self._connect() as connection:
@@ -475,8 +600,15 @@ class IndexStore:
         user_id: str | None = None,
         limit: int = 10,
         context_directory: str | Path | None = None,
+        allowed_document_ids: set[int] | None = None,
     ) -> tuple[RetrievalPlan, list[SearchResult]]:
-        execution = self.search_with_diagnostics(query, user_id, limit, context_directory)
+        execution = self.search_with_diagnostics(
+            query,
+            user_id,
+            limit,
+            context_directory,
+            allowed_document_ids,
+        )
         return execution.plan, execution.results
 
     def search_with_diagnostics(
@@ -485,6 +617,7 @@ class IndexStore:
         user_id: str | None = None,
         limit: int = 10,
         context_directory: str | Path | None = None,
+        allowed_document_ids: set[int] | None = None,
     ) -> SearchExecution:
         started_at = perf_counter()
         plan = plan_query(query, semantic_available=self.embedder is not None)
@@ -536,6 +669,8 @@ class IndexStore:
                 ranked = self._semantic_search_candidates(connection, retrieval_query)
             else:
                 ranked = self._hybrid_candidates(connection, plan.terms, retrieval_query)
+            if allowed_document_ids is not None:
+                ranked = [candidate for candidate in ranked if candidate[0]["id"] in allowed_document_ids]
 
             confidence = self._candidate_confidence(ranked, plan.terms)
             expanded_query = None
@@ -553,6 +688,12 @@ class IndexStore:
                         expanded_terms,
                         expanded_query,
                     )
+                    if allowed_document_ids is not None:
+                        expanded_ranked = [
+                            candidate
+                            for candidate in expanded_ranked
+                            if candidate[0]["id"] in allowed_document_ids
+                        ]
                     expanded_confidence = self._candidate_confidence(expanded_ranked, expanded_terms)
                     if expanded_confidence > confidence or (not ranked and expanded_ranked):
                         ranked = expanded_ranked
