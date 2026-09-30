@@ -21,7 +21,9 @@ The API listens on `http://127.0.0.1:8000`; interactive API documentation is at 
 
 ### Authentication and File Permissions
 
-The API remains open for local development when `FILE_RECOMMENDER_AUTH_TOKENS` is unset. To enable bearer authentication, configure a JSON map from user IDs to unique private tokens of at least 16 characters before starting the service:
+The API remains open for local development when no auth mode is configured. Static tokens are convenient for local multi-user testing; use OIDC JWT verification when integrating an identity provider.
+
+For static local tokens, configure a JSON map from user IDs to unique private tokens of at least 16 characters:
 
 ```bash
 export FILE_RECOMMENDER_AUTH_TOKENS='{"alice":"replace-with-a-long-random-token","bob":"replace-with-another-long-random-token"}'
@@ -30,7 +32,7 @@ uvicorn file_recommender.api:app --reload
 
 Use a secret manager or private environment injection outside local development; never commit real tokens. Authenticated indexing makes the caller the file owner. Search and file-open events are scoped to that principal, and any supplied `user_id` must match it. Files owned by another user are skipped during re-indexing rather than overwritten.
 
-Owners can grant and revoke read access for another configured user with `POST /permissions` and `DELETE /permissions`:
+Owners can grant and revoke read access for another user principal with `POST /permissions` and `DELETE /permissions` (static-token mode only accepts configured users):
 
 ```bash
 curl -X POST http://127.0.0.1:8000/permissions \
@@ -44,34 +46,19 @@ curl -X DELETE http://127.0.0.1:8000/permissions \
   -d '{"path":"/path/to/your/files/plan.md","target_user_id":"bob"}'
 ```
 
-This is opt-in local authentication with static configured tokens, not OAuth/OIDC or a managed identity/token lifecycle. Existing documents without ACL entries are hidden in authenticated mode until indexed by an authenticated owner.
-
-### Authentication and File Permissions
-
-Local development remains open when `FILE_RECOMMENDER_AUTH_TOKENS` is unset. To enable bearer authentication, configure a JSON object mapping user IDs to long, private tokens before starting the API:
+For an external OIDC provider, install the auth extra and configure the API audience, exact issuer, and provider JWKS URL:
 
 ```bash
-export FILE_RECOMMENDER_AUTH_TOKENS='{"alice":"replace-with-a-long-random-token","bob":"replace-with-another-long-random-token"}'
+pip install -e '.[auth]'
+export FILE_RECOMMENDER_OIDC_ISSUER='https://identity.example.com/'
+export FILE_RECOMMENDER_OIDC_AUDIENCE='file-recommender-api'
+export FILE_RECOMMENDER_OIDC_JWKS_URL='https://identity.example.com/.well-known/jwks.json'
 uvicorn file_recommender.api:app --reload
 ```
 
-In this mode, authenticated indexing makes the caller the file owner. Search is filtered to files the principal owns or has read access to before confidence scoring and reranking. User IDs supplied in request bodies must match the bearer-token principal; they cannot be used to impersonate another configured user.
+OIDC mode accepts RS256-signed bearer JWT access tokens and validates issuer, audience, expiration, and subject against keys fetched from the configured HTTPS JWKS URL. The verified `sub` becomes the ACL principal. Opaque tokens and interactive login flows are not implemented. Configure either OIDC or the static token map, not both. Existing documents without ACL entries are hidden until indexed by an authenticated owner.
 
-```bash
-curl -X POST http://127.0.0.1:8000/index \
-  -H 'Authorization: Bearer replace-with-a-long-random-token' \
-  -H 'Content-Type: application/json' \
-  -d '{"directory":"/path/to/your/files"}'
-
-curl -X POST http://127.0.0.1:8000/permissions \
-  -H 'Authorization: Bearer replace-with-a-long-random-token' \
-  -H 'Content-Type: application/json' \
-  -d '{"path":"/path/to/your/files/plan.md","target_user_id":"bob"}'
-```
-
-The owner can revoke the read grant with `DELETE /permissions` using the same JSON body. Only configured users can receive grants. Existing indexed files without ACL records are not visible in authenticated mode until an authenticated user indexes them and becomes their owner.
-
-This is local opt-in authentication: tokens are static configuration values, with no expiry, self-service rotation, external identity provider, or production secret manager. Use HTTPS and a proper identity/token lifecycle before deployment beyond a trusted local environment.
+Use HTTPS and deployment-managed configuration/secrets outside local development. OIDC key sets are cached and refreshed by PyJWT; provider outages fail closed with `503` rather than bypassing authentication.
 
 Index a local directory:
 

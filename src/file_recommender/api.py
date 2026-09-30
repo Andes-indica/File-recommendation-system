@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from .embeddings import SentenceTransformerEmbedder, SentenceTransformerReranker
 from .index import IndexStore
+from .oidc_auth import IdentityProviderUnavailable, InvalidIdentityToken, OIDCTokenVerifier
 from .query_understanding import OpenAIQueryAnalyzer
 
 
@@ -41,7 +42,7 @@ class FilePermissionRequest(BaseModel):
     target_user_id: str = Field(min_length=1, max_length=128)
 
 
-def create_app(store: IndexStore | None = None) -> FastAPI:
+def create_app(store: IndexStore | None = None, oidc_verifier: OIDCTokenVerifier | None = None) -> FastAPI:
     database_path = os.environ.get("FILE_RECOMMENDER_DB", ".file-recommender/index.sqlite3")
     audit_token = os.environ.get("FILE_RECOMMENDER_AUDIT_TOKEN")
     auth_tokens_json = os.environ.get("FILE_RECOMMENDER_AUTH_TOKENS")
@@ -62,6 +63,20 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
         or len(set(auth_tokens.values())) != len(auth_tokens)
     ):
         raise ValueError("FILE_RECOMMENDER_AUTH_TOKENS must map user IDs to unique tokens of at least 16 characters.")
+    oidc_issuer = os.environ.get("FILE_RECOMMENDER_OIDC_ISSUER")
+    oidc_audience = os.environ.get("FILE_RECOMMENDER_OIDC_AUDIENCE")
+    oidc_jwks_url = os.environ.get("FILE_RECOMMENDER_OIDC_JWKS_URL")
+    oidc_values = (oidc_issuer, oidc_audience, oidc_jwks_url)
+    if any(oidc_values) and not all(oidc_values):
+        raise ValueError(
+            "FILE_RECOMMENDER_OIDC_ISSUER, FILE_RECOMMENDER_OIDC_AUDIENCE, and "
+            "FILE_RECOMMENDER_OIDC_JWKS_URL must be configured together."
+        )
+    if auth_tokens and (any(oidc_values) or oidc_verifier is not None):
+        raise ValueError("Configure either static auth tokens or OIDC authentication, not both.")
+    if any(oidc_values) and oidc_verifier is None:
+        oidc_verifier = OIDCTokenVerifier(oidc_issuer, oidc_audience, oidc_jwks_url)
+    auth_enabled = bool(auth_tokens) or oidc_verifier is not None
     if store is None:
         model_id = os.environ.get("FILE_RECOMMENDER_MODEL")
         reranker_model_id = os.environ.get("FILE_RECOMMENDER_RERANKER_MODEL")
@@ -86,17 +101,25 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
     application = FastAPI(title="Intelligent File Recommendation API", version="0.1.0")
 
     def resolve_user_id(requested_user_id: str | None, authorization: str | None) -> str | None:
-        if not auth_tokens:
+        if not auth_enabled:
             return requested_user_id
         scheme, separator, supplied_token = (authorization or "").partition(" ")
         if not separator or scheme.casefold() != "bearer" or not supplied_token:
             raise HTTPException(status_code=401, detail="A valid bearer token is required.")
-        authenticated_user_id = None
-        for user_id, configured_token in auth_tokens.items():
-            if secrets.compare_digest(supplied_token, configured_token):
-                authenticated_user_id = user_id
-        if authenticated_user_id is None:
-            raise HTTPException(status_code=401, detail="A valid bearer token is required.")
+        if oidc_verifier is not None:
+            try:
+                authenticated_user_id = oidc_verifier.authenticate(supplied_token)
+            except InvalidIdentityToken as error:
+                raise HTTPException(status_code=401, detail=str(error)) from error
+            except IdentityProviderUnavailable as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+        else:
+            authenticated_user_id = None
+            for user_id, configured_token in auth_tokens.items():
+                if secrets.compare_digest(supplied_token, configured_token):
+                    authenticated_user_id = user_id
+            if authenticated_user_id is None:
+                raise HTTPException(status_code=401, detail="A valid bearer token is required.")
         if requested_user_id is not None and requested_user_id != authenticated_user_id:
             raise HTTPException(status_code=403, detail="Requested user does not match the authenticated principal.")
         return authenticated_user_id
@@ -127,7 +150,7 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
             user_id = resolve_user_id(request.user_id, authorization)
             allowed_document_ids = (
                 index.get_accessible_document_ids(user_id)
-                if auth_tokens and user_id is not None
+                if auth_enabled and user_id is not None
                 else None
             )
             execution = index.search_with_diagnostics(
@@ -164,7 +187,7 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
         user_id = resolve_user_id(request.user_id, authorization)
         if user_id is None:
             raise HTTPException(status_code=400, detail="user_id is required in local development mode.")
-        if auth_tokens and not index.can_read_path(user_id, request.path):
+        if auth_enabled and not index.can_read_path(user_id, request.path):
             raise HTTPException(status_code=404, detail="File is not available to this user.")
         if not index.record_access(user_id, request.path):
             raise HTTPException(status_code=404, detail="File is not in the index.")
@@ -201,10 +224,10 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
         request: FilePermissionRequest,
         authorization: str | None = Header(default=None, alias="Authorization"),
     ):
-        if not auth_tokens:
+        if not auth_enabled:
             raise HTTPException(status_code=503, detail="File sharing requires configured authentication.")
         owner_user_id = resolve_user_id(None, authorization)
-        if request.target_user_id not in auth_tokens:
+        if auth_tokens and request.target_user_id not in auth_tokens:
             raise HTTPException(status_code=404, detail="Target user is not configured.")
         result = index.grant_file_access(owner_user_id, request.target_user_id, request.path)
         if result == "not_found":
