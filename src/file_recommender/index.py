@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections import Counter
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -144,6 +145,29 @@ class IndexStore:
                 );
                 CREATE INDEX IF NOT EXISTS recommendation_user_document
                     ON recommendation_events(user_id, document_id, feedback);
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    id INTEGER PRIMARY KEY,
+                    occurred_at TEXT NOT NULL,
+                    actor_id TEXT,
+                    event_type TEXT NOT NULL,
+                    resource_type TEXT NOT NULL,
+                    resource_id TEXT,
+                    metadata_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS audit_events_time
+                    ON audit_events(occurred_at DESC);
+                CREATE INDEX IF NOT EXISTS audit_events_type_time
+                    ON audit_events(event_type, occurred_at DESC);
+                CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+                BEFORE UPDATE ON audit_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'audit events are append-only');
+                END;
+                CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+                BEFORE DELETE ON audit_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'audit events are append-only');
+                END;
                 CREATE TABLE IF NOT EXISTS semantic_embeddings (
                     document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
                     content_hash TEXT NOT NULL,
@@ -305,7 +329,14 @@ class IndexStore:
                 connection.execute("DELETE FROM chunk_fts WHERE document_id = ?", (document_id,))
                 connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
 
-        return {"indexed": indexed, "skipped": skipped, "removed": len(stale_ids)}
+        outcome = {"indexed": indexed, "skipped": skipped, "removed": len(stale_ids)}
+        self.record_audit_event(
+            actor_id=None,
+            event_type="index.completed",
+            resource_type="directory",
+            metadata=outcome,
+        )
+        return outcome
 
     def record_access(self, user_id: str, path: str) -> bool:
         with self._connect() as connection:
@@ -318,12 +349,26 @@ class IndexStore:
                 "INSERT INTO access_events(user_id, document_id, accessed_at) VALUES (?, ?, ?)",
                 (user_id, row["id"], datetime.now(timezone.utc).isoformat()),
             )
+            self._insert_audit_event(
+                connection,
+                actor_id=user_id,
+                event_type="file.accessed",
+                resource_type="file",
+                resource_id=str(row["id"]),
+                metadata={},
+            )
             return True
 
     def record_feedback(self, user_id: str, recommendation_id: int, feedback: str) -> bool:
         if feedback not in {"relevant", "not_relevant"}:
             raise ValueError("Feedback must be 'relevant' or 'not_relevant'.")
         with self._connect() as connection:
+            recommendation = connection.execute(
+                "SELECT document_id FROM recommendation_events WHERE id = ? AND user_id = ?",
+                (recommendation_id, user_id),
+            ).fetchone()
+            if recommendation is None:
+                return False
             result = connection.execute(
                 """
                 UPDATE recommendation_events
@@ -332,10 +377,106 @@ class IndexStore:
                 """,
                 (feedback, datetime.now(timezone.utc).isoformat(), recommendation_id, user_id),
             )
+            if result.rowcount == 1:
+                self._insert_audit_event(
+                    connection,
+                    actor_id=user_id,
+                    event_type="recommendation.feedback",
+                    resource_type="file",
+                    resource_id=str(recommendation["document_id"]),
+                    metadata={"feedback": feedback},
+                )
             return result.rowcount == 1
 
-    def search(self, query: str, user_id: str | None = None, limit: int = 10) -> tuple[RetrievalPlan, list[SearchResult]]:
-        execution = self.search_with_diagnostics(query, user_id, limit)
+    @staticmethod
+    def _insert_audit_event(
+        connection: sqlite3.Connection,
+        actor_id: str | None,
+        event_type: str,
+        resource_type: str,
+        resource_id: str | None,
+        metadata: dict[str, object],
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO audit_events(
+                occurred_at, actor_id, event_type, resource_type, resource_id, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                actor_id,
+                event_type,
+                resource_type,
+                resource_id,
+                json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+            ),
+        )
+
+    def record_audit_event(
+        self,
+        actor_id: str | None,
+        event_type: str,
+        resource_type: str,
+        resource_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        with self._connect() as connection:
+            self._insert_audit_event(
+                connection,
+                actor_id,
+                event_type,
+                resource_type,
+                resource_id,
+                metadata or {},
+            )
+
+    def list_audit_events(
+        self,
+        actor_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        filters = []
+        parameters: list[object] = []
+        if actor_id is not None:
+            filters.append("actor_id = ?")
+            parameters.append(actor_id)
+        if event_type is not None:
+            filters.append("event_type = ?")
+            parameters.append(event_type)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        parameters.append(max(1, min(limit, 500)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, occurred_at, actor_id, event_type, resource_type, resource_id, metadata_json
+                FROM audit_events {where_clause}
+                ORDER BY id DESC LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "occurred_at": row["occurred_at"],
+                "actor_id": row["actor_id"],
+                "event_type": row["event_type"],
+                "resource_type": row["resource_type"],
+                "resource_id": row["resource_id"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        ]
+
+    def search(
+        self,
+        query: str,
+        user_id: str | None = None,
+        limit: int = 10,
+        context_directory: str | Path | None = None,
+    ) -> tuple[RetrievalPlan, list[SearchResult]]:
+        execution = self.search_with_diagnostics(query, user_id, limit, context_directory)
         return execution.plan, execution.results
 
     def search_with_diagnostics(
@@ -343,13 +484,25 @@ class IndexStore:
         query: str,
         user_id: str | None = None,
         limit: int = 10,
+        context_directory: str | Path | None = None,
     ) -> SearchExecution:
         started_at = perf_counter()
         plan = plan_query(query, semantic_available=self.embedder is not None)
         if not plan.terms:
+            self.record_audit_event(
+                actor_id=user_id,
+                event_type="search.completed",
+                resource_type="search",
+                metadata={"strategy": plan.strategy, "candidate_count": 0, "confidence": 0.0},
+            )
             return SearchExecution(plan, [], 0.0, None, 0, False, "empty query", 0.0)
 
         retrieval_query = query
+        resolved_context = None
+        if context_directory is not None:
+            resolved_context = Path(context_directory).expanduser().resolve(strict=True)
+            if not resolved_context.is_dir():
+                raise ValueError("The supplied context path is not a directory.")
         if self.query_analyzer is not None and plan.strategy == "hybrid" and len(plan.terms) >= 6:
             try:
                 analysis = self.query_analyzer.analyze(query)
@@ -469,6 +622,11 @@ class IndexStore:
                     if file_activity.get("weekdays", {}).get(now.weekday(), 0):
                         score += 0.01
                         explanations.append("This file is often accessed on this weekday (UTC).")
+                if resolved_context is not None:
+                    context_affinity = self._context_affinity(row["path"], resolved_context)
+                    if context_affinity:
+                        score += context_affinity
+                        explanations.append("Located in or near the current working directory.")
                 positive_feedback, negative_feedback = feedback_signals.get(row["id"], (0, 0))
                 if positive_feedback:
                     score += min(positive_feedback, 3) * 0.025
@@ -519,6 +677,20 @@ class IndexStore:
                     selected[position] = SearchResult(
                         **{**result.__dict__, "recommendation_id": cursor.lastrowid}
                     )
+        latency_ms = round((perf_counter() - started_at) * 1000, 3)
+        self.record_audit_event(
+            actor_id=user_id,
+            event_type="search.completed",
+            resource_type="search",
+            metadata={
+                "strategy": plan.strategy,
+                "candidate_count": candidate_count,
+                "confidence": round(confidence, 4),
+                "expanded": expanded_query is not None,
+                "reranked": reranked,
+                "latency_ms": latency_ms,
+            },
+        )
         return SearchExecution(
             plan,
             selected,
@@ -527,8 +699,17 @@ class IndexStore:
             candidate_count,
             reranked,
             rerank_reason,
-            round((perf_counter() - started_at) * 1000, 3),
+            latency_ms,
         )
+
+    @staticmethod
+    def _context_affinity(document_path: str, context_directory: Path) -> float:
+        parent = Path(document_path).parent.resolve(strict=False)
+        if parent == context_directory:
+            return 0.04
+        if context_directory in parent.parents:
+            return 0.025
+        return 0.0
 
     @staticmethod
     def _should_rerank(

@@ -1,0 +1,21 @@
+{
+  "name": "local-retrieval-smoke-v1",
+  "queries": [
+    {
+      "query": "release milestones launch timeline",
+      "relevant_files": ["product-roadmap.md"]
+    },
+    {
+      "query": "quarterly budget expenses forecast",
+      "relevant_files": ["finance-budget.md"]
+    },
+    {
+      "query": "automobile maintenance service intervals",
+      "relevant_files": ["vehicle-maintenance.md"]
+    },
+    {
+      "query": "platform team meeting minutes",
+      "relevant_files": ["team-meeting.md"]
+    }
+  ]
+}

@@ -1,4 +1,6 @@
 import re
+import json
+import sqlite3
 from io import BytesIO
 
 import pytest
@@ -186,6 +188,100 @@ def test_reranker_skips_single_candidate_to_save_compute(tmp_path):
     assert execution.reranked is False
     assert execution.rerank_reason == "fewer than two candidates"
     assert reranker.calls == 0
+
+
+def test_current_context_directory_personalizes_equivalent_candidates(tmp_path):
+    source = tmp_path / "files"
+    active = source / "active-project"
+    archive = source / "archive"
+    active.mkdir(parents=True)
+    archive.mkdir()
+    (active / "alpha.md").write_text("project design decisions", encoding="utf-8")
+    (archive / "zeta.md").write_text("project design decisions", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+
+    execution = store.search_with_diagnostics(
+        "project design decisions",
+        context_directory=str(active),
+    )
+
+    assert execution.results[0].name == "alpha.md"
+    assert "current working directory" in execution.results[0].explanation
+
+
+def test_search_api_rejects_invalid_context_directory(tmp_path):
+    store = IndexStore(tmp_path / "index.sqlite3")
+    client = TestClient(create_app(store))
+
+    response = client.post(
+        "/search",
+        json={"query": "project notes", "context_directory": str(tmp_path / "missing")},
+    )
+
+    assert response.status_code == 400
+
+
+def test_audit_trail_captures_operations_without_queries_or_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("FILE_RECOMMENDER_AUDIT_TOKEN", "test-audit-token")
+    source = tmp_path / "private-project"
+    source.mkdir()
+    document = source / "notes.md"
+    document.write_text("super-secret-search phrase project notes", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    client = TestClient(create_app(store))
+
+    assert client.post("/index", json={"directory": str(source)}).status_code == 200
+    search_response = client.post(
+        "/search",
+        json={"query": "super-secret-search phrase", "user_id": "alice"},
+    )
+    recommendation_id = search_response.json()["results"][0]["recommendation_id"]
+    assert client.post("/access", json={"user_id": "alice", "path": str(document)}).status_code == 204
+    assert client.post(
+        "/feedback",
+        json={
+            "user_id": "alice",
+            "recommendation_id": recommendation_id,
+            "feedback": "relevant",
+        },
+    ).status_code == 200
+
+    assert client.get("/audit").status_code == 401
+    response = client.get("/audit", headers={"X-Audit-Token": "test-audit-token"})
+    assert response.status_code == 200
+    events = response.json()["events"]
+    event_types = {event["event_type"] for event in events}
+    assert {
+        "index.completed",
+        "search.completed",
+        "file.accessed",
+        "recommendation.feedback",
+    } <= event_types
+    assert any(event["actor_id"] == "alice" for event in events)
+    assert client.get(
+        "/audit",
+        params={"event_type": "search.completed"},
+        headers={"X-Audit-Token": "test-audit-token"},
+    ).json()["events"]
+    serialized_events = json.dumps(events)
+    assert "super-secret-search" not in serialized_events
+    assert str(source) not in serialized_events
+    assert "project notes" not in serialized_events
+
+
+def test_audit_events_are_append_only_and_listing_can_be_disabled(tmp_path, monkeypatch):
+    monkeypatch.delenv("FILE_RECOMMENDER_AUDIT_TOKEN", raising=False)
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.record_audit_event(None, "test.created", "test", metadata={"ok": True})
+    client = TestClient(create_app(store))
+
+    assert client.get("/audit").status_code == 503
+    with store._connect() as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute("UPDATE audit_events SET event_type = 'changed' WHERE id = 1")
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute("DELETE FROM audit_events WHERE id = 1")
 
 
 def test_query_analysis_refines_query_and_selects_supported_strategy(tmp_path):

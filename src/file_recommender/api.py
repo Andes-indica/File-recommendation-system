@@ -2,9 +2,10 @@
 
 import os
 from pathlib import Path
+import secrets
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .embeddings import SentenceTransformerEmbedder, SentenceTransformerReranker
@@ -20,6 +21,7 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     user_id: str | None = Field(default=None, min_length=1, max_length=128)
     limit: int = Field(default=10, ge=1, le=50)
+    context_directory: str | None = Field(default=None, max_length=2048)
 
 
 class AccessRequest(BaseModel):
@@ -35,6 +37,7 @@ class FeedbackRequest(BaseModel):
 
 def create_app(store: IndexStore | None = None) -> FastAPI:
     database_path = os.environ.get("FILE_RECOMMENDER_DB", ".file-recommender/index.sqlite3")
+    audit_token = os.environ.get("FILE_RECOMMENDER_AUDIT_TOKEN")
     if store is None:
         model_id = os.environ.get("FILE_RECOMMENDER_MODEL")
         reranker_model_id = os.environ.get("FILE_RECOMMENDER_RERANKER_MODEL")
@@ -71,7 +74,15 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
 
     @application.post("/search")
     def search(request: SearchRequest):
-        execution = index.search_with_diagnostics(request.query, request.user_id, request.limit)
+        try:
+            execution = index.search_with_diagnostics(
+                request.query,
+                request.user_id,
+                request.limit,
+                request.context_directory,
+            )
+        except (OSError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
         return {
             "query": request.query,
             "strategy": execution.plan.strategy,
@@ -108,6 +119,19 @@ def create_app(store: IndexStore | None = None) -> FastAPI:
         if not recorded:
             raise HTTPException(status_code=404, detail="Recommendation not found for this user.")
         return {"recorded": True}
+
+    @application.get("/audit")
+    def get_audit_events(
+        actor_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        supplied_token: str | None = Header(default=None, alias="X-Audit-Token"),
+    ):
+        if not audit_token:
+            raise HTTPException(status_code=503, detail="Audit listing is disabled; configure FILE_RECOMMENDER_AUDIT_TOKEN.")
+        if supplied_token is None or not secrets.compare_digest(supplied_token, audit_token):
+            raise HTTPException(status_code=401, detail="Invalid audit token.")
+        return {"events": index.list_audit_events(actor_id, event_type, limit)}
 
     return application
 

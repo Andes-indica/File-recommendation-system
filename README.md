@@ -1,6 +1,8 @@
 # Intelligent File Recommendation
 
-An incremental, local-first implementation of the file discovery architecture. The first backend slice indexes plain-text and Markdown files, routes queries to filename, metadata, keyword, or hybrid retrieval, and can use recorded access history to personalize ranking.
+An incremental, local-first implementation of the file discovery architecture. It indexes supported local documents, routes queries across lexical and optional semantic retrieval, and personalizes results using supplied working context and recorded activity.
+
+See [the proposed-vs-implemented feature matrix](docs/feature-status.md) for current status, limitations, and recommended next milestones.
 
 ![System architecture](docs/image-1.png)
 
@@ -32,6 +34,16 @@ curl -X POST http://127.0.0.1:8000/search \
   -H 'Content-Type: application/json' \
   -d '{"query":"project launch notes","user_id":"local-user"}'
 ```
+
+Pass the active project directory to apply a small working-context preference:
+
+```bash
+curl -X POST http://127.0.0.1:8000/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"project launch notes","user_id":"local-user","context_directory":"/path/to/your/files/current-project"}'
+```
+
+The context directory must exist. It is used only for path-proximity scoring; the API does not scan it or send its contents to a model.
 
 `.txt`, `.md`, `.rst`, `.docx`, and `.pdf` files up to 1 MiB are indexed. PDF and DOCX support requires the `documents` extra shown above. Extraction caps text at 500,000 characters, limits PDFs to 200 pages, and rejects DOCX archives over 20 MiB uncompressed, over 2,000 archive members, or with an extreme compression ratio. Malformed, empty, encrypted, oversized, hidden, and unsupported files are skipped. The database defaults to `.file-recommender/index.sqlite3`; set `FILE_RECOMMENDER_DB` to change it. Keyword search works locally without model credentials.
 
@@ -95,5 +107,31 @@ curl -X POST http://127.0.0.1:8000/feedback \
 ```
 
 Use `not_relevant` to downrank a result on future matching searches. Feedback is tied to the user who received the recommendation, and aggregate counts appear in the profile response.
+
+## Audit log
+
+The local SQLite audit trail records completed indexing, searches, file opens, and recommendation feedback. It stores event type, time, caller-supplied actor ID, internal resource IDs, and limited operational metadata. Raw queries, full file paths, document contents, and credentials are not written to the audit trail.
+
+Enable the read-only audit endpoint by setting a private shared token before starting the API:
+
+```bash
+export FILE_RECOMMENDER_AUDIT_TOKEN='set-a-private-local-token'
+uvicorn file_recommender.api:app --reload
+```
+
+Then list or filter events with `GET /audit`, using the `X-Audit-Token` header. Optional filters are `actor_id`, `event_type`, and `limit` (maximum 500). The token is a local operational control, not a replacement for user authentication. Actor IDs are caller-asserted until authentication is implemented. SQLite triggers block normal update/delete statements, but this local log is not cryptographically tamper-proof and should not be treated as a production compliance audit system.
+
+## Retrieval Evaluation
+
+Run the included local smoke corpus against the current lexical retrieval pipeline:
+
+```bash
+python -m file_recommender.evaluation \
+  --documents tests/fixtures/evaluation/documents \
+  --judgments tests/fixtures/evaluation/judgments.json \
+  --k 3
+```
+
+The evaluator builds a temporary SQLite index and prints JSON containing Recall@k, MRR@k, nDCG@k, median and p95 per-query retrieval latency, strategy counts, and per-query rankings. Judgments list relevant filenames in `relevant_files`. The bundled four-query corpus is a wiring smoke test only; it is too small and narrow to support claims about production retrieval quality.
 
 Run tests with `pytest`.
