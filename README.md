@@ -86,7 +86,7 @@ curl -X POST http://127.0.0.1:8000/search \
 
 The context directory must exist. It is used only for path-proximity scoring; the API does not scan it or send its contents to a model.
 
-`.txt`, `.md`, `.rst`, `.docx`, and `.pdf` files up to 1 MiB are indexed. PDF and DOCX support requires the `documents` extra shown above. Extraction caps text at 500,000 characters, limits PDFs to 200 pages, and rejects DOCX archives over 20 MiB uncompressed, over 2,000 archive members, or with an extreme compression ratio. Malformed, empty, encrypted, oversized, hidden, and unsupported files are skipped. The database defaults to `.file-recommender/index.sqlite3`; set `FILE_RECOMMENDER_DB` to change it. Keyword search works locally without model credentials.
+`.txt`, `.md`, `.rst`, `.docx`, `.pdf`, `.xlsx`, and `.pptx` files up to 1 MiB are indexed. Office/PDF support requires the `documents` extra shown above. Extraction caps text at 500,000 characters, limits PDFs to 200 pages and presentations to 200 slides, and reads at most 50,000 spreadsheet cells. Office ZIP archives are limited to 20 MiB uncompressed and 2,000 members, with a maximum compression ratio of 100. Malformed, empty, encrypted, oversized, hidden, and unsupported files are skipped. The database defaults to `.file-recommender/index.sqlite3`; set `FILE_RECOMMENDER_DB` to change it. Keyword search works locally without model credentials.
 
 ## Current retrieval scope
 
@@ -173,6 +173,6 @@ python -m file_recommender.evaluation \
   --k 3
 ```
 
-The evaluator builds a temporary SQLite index and prints JSON containing Recall@k, MRR@k, nDCG@k, median and p95 per-query retrieval latency, strategy counts, and per-query rankings. Judgments list relevant filenames in `relevant_files`. The bundled four-query corpus is a wiring smoke test only; it is too small and narrow to support claims about production retrieval quality.
+The evaluator builds a temporary SQLite index and prints JSON containing Recall@k, MRR@k, nDCG@k, median and p95 per-query retrieval latency, strategy counts, and per-query rankings. Judgments list relevant filenames in `relevant_files`. The bundled 22-query corpus covers 15 synthetic documents, including hybrid, filename, and metadata routes, multi-relevant queries, and near-topic confounders. Hybrid retrieval fuses filename, FTS5, optional semantic ranks, and query-term coverage with reciprocal-rank fusion. The current lexical baseline reports Recall@3 1.00, MRR@3 1.0000, and nDCG@3 0.9964 on this set. One multi-relevant travel/budget query still places its second relevant file below a related onboarding result. This is a regression set, not a reviewed real-user corpus or evidence of production retrieval quality.
 
 Run tests with `pytest`.

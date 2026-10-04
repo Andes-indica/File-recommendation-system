@@ -581,7 +581,7 @@ def test_low_confidence_search_expands_once_to_find_synonym_match(tmp_path):
     store = IndexStore(tmp_path / "index.sqlite3")
     store.index_directory(source)
 
-    execution = store.search_with_diagnostics("automobile repair manual")
+    execution = store.search_with_diagnostics("vehicle servicing guidance")
 
     assert execution.expanded_query is not None
     assert "car" in execution.expanded_query.split()
@@ -591,11 +591,32 @@ def test_low_confidence_search_expands_once_to_find_synonym_match(tmp_path):
 
     response = TestClient(create_app(store)).post(
         "/search",
-        json={"query": "automobile repair manual"},
+        json={"query": "vehicle servicing guidance"},
     )
     assert response.status_code == 200
     assert response.json()["expanded_query"] == execution.expanded_query
     assert response.json()["results"][0]["name"] == "vehicle-care.md"
+
+
+def test_keyword_query_with_boolean_word_does_not_add_unrelated_candidates(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "product-roadmap.md").write_text(
+        "Product release milestones and roadmap timeline", encoding="utf-8"
+    )
+    (source / "customer-feedback.md").write_text(
+        "Customer feedback about product release concerns", encoding="utf-8"
+    )
+    (source / "finance-budget.md").write_text(
+        "Quarterly expenses, forecast assumptions, and department budget", encoding="utf-8"
+    )
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+
+    plan, results = store.search("product release concerns and customer feedback")
+
+    assert plan.strategy == "hybrid"
+    assert {result.name for result in results} == {"customer-feedback.md", "product-roadmap.md"}
 
 
 def test_docx_and_pdf_files_are_extracted_and_searchable(tmp_path):
@@ -635,6 +656,68 @@ def test_docx_and_pdf_files_are_extracted_and_searchable(tmp_path):
     assert "Platform team" in docx_content
     assert pdf_plan.strategy == "hybrid"
     assert pdf_results[0].name == "research-summary.pdf"
+
+
+def test_xlsx_and_pptx_content_is_extracted_and_searchable(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    pptx_module = pytest.importorskip("pptx")
+    source = tmp_path / "files"
+    source.mkdir()
+
+    workbook_path = source / "supplier-risk.xlsx"
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Supplier Risks"
+    worksheet.append(["Material", "Risk", "Owner"])
+    worksheet.append(["Lithium cathode", "Port delay", "Procurement team"])
+    workbook.save(workbook_path)
+
+    presentation_path = source / "resilience-proposal.pptx"
+    presentation = pptx_module.Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    text_box = slide.shapes.add_textbox(0, 0, 5_000_000, 1_000_000)
+    text_box.text_frame.text = "Coastal flood barrier resilience proposal"
+    table_shape = slide.shapes.add_table(2, 2, 0, 1_000_000, 5_000_000, 1_000_000)
+    table_shape.table.cell(0, 0).text = "Location"
+    table_shape.table.cell(0, 1).text = "North harbor"
+    table_shape.table.cell(1, 0).text = "Design level"
+    table_shape.table.cell(1, 1).text = "Storm surge buffer"
+    presentation.save(presentation_path)
+
+    store = IndexStore(tmp_path / "index.sqlite3")
+    outcome = store.index_directory(source)
+    assert outcome == {"indexed": 2, "skipped": 0, "removed": 0}
+
+    spreadsheet_plan, spreadsheet_results = store.search("lithium cathode port delay")
+    presentation_plan, presentation_results = store.search("coastal flood barrier resilience")
+    with store._connect() as connection:
+        spreadsheet_text = connection.execute(
+            "SELECT content FROM documents WHERE path = ?", (str(workbook_path.resolve()),)
+        ).fetchone()["content"]
+        presentation_text = connection.execute(
+            "SELECT content FROM documents WHERE path = ?", (str(presentation_path.resolve()),)
+        ).fetchone()["content"]
+
+    assert spreadsheet_plan.strategy == "hybrid"
+    assert spreadsheet_results[0].name == "supplier-risk.xlsx"
+    assert "Procurement team" in spreadsheet_text
+    assert presentation_plan.strategy == "hybrid"
+    assert presentation_results[0].name == "resilience-proposal.pptx"
+    assert "North harbor" in presentation_text
+    assert "Storm surge buffer" in presentation_text
+
+
+def test_malformed_xlsx_and_pptx_archives_are_skipped(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "broken.xlsx").write_bytes(b"not a zip archive")
+    (source / "wrong-content.pptx").write_bytes(b"not a zip archive")
+    (source / "valid.md").write_text("valid search document", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+
+    outcome = store.index_directory(source)
+
+    assert outcome == {"indexed": 1, "skipped": 2, "removed": 0}
 
 
 def test_malformed_docx_is_skipped_and_extraction_limits_are_enforced(tmp_path):

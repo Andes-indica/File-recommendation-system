@@ -1,5 +1,5 @@
 {
-  "name": "local-retrieval-smoke-v1",
+  "name": "local-retrieval-regression-v3",
   "queries": [
     {
       "query": "release milestones launch timeline",
@@ -16,6 +16,78 @@
     {
       "query": "platform team meeting minutes",
       "relevant_files": ["team-meeting.md"]
+    },
+    {
+      "query": "cloud infrastructure cutover rollback plan",
+      "relevant_files": ["cloud-migration-plan.md"]
+    },
+    {
+      "query": "exposed credential incident response token rotation",
+      "relevant_files": ["security-incident-review.md"]
+    },
+    {
+      "query": "backend engineering candidate interview debrief",
+      "relevant_files": ["hiring-interview.md"]
+    },
+    {
+      "query": "hotel flight reimbursement travel receipts",
+      "relevant_files": ["travel-expenses.md"]
+    },
+    {
+      "query": "seasonal flower planting watering calendar",
+      "relevant_files": ["garden-care.md"]
+    },
+    {
+      "query": "new hire first week laptop account checklist",
+      "relevant_files": ["employee-onboarding.md"]
+    },
+    {
+      "query": "restore database from backup disaster recovery",
+      "relevant_files": ["backup-recovery.md"]
+    },
+    {
+      "query": "mobile application feature requests user satisfaction",
+      "relevant_files": ["customer-feedback.md"]
+    },
+    {
+      "query": "sprint blockers retrospective action items",
+      "relevant_files": ["sprint-retrospective.md"]
+    },
+    {
+      "query": "camera aperture shutter speed exposure guide",
+      "relevant_files": ["camera-photography.md"]
+    },
+    {
+      "query": "planning meeting retrospective action items",
+      "relevant_files": ["team-meeting.md", "sprint-retrospective.md"]
+    },
+    {
+      "query": "employee travel expenses budget reimbursement",
+      "relevant_files": ["travel-expenses.md", "finance-budget.md"]
+    },
+    {
+      "query": "product release concerns and customer feedback",
+      "relevant_files": ["customer-feedback.md", "product-roadmap.md"]
+    },
+    {
+      "query": "new employee access and onboarding schedule",
+      "relevant_files": ["employee-onboarding.md"]
+    },
+    {
+      "query": "cloud backup database recovery",
+      "relevant_files": ["backup-recovery.md", "cloud-migration-plan.md"]
+    },
+    {
+      "query": "weekly team meeting discussion notes",
+      "relevant_files": ["team-meeting.md"]
+    },
+    {
+      "query": "filename employee-onboarding.md",
+      "relevant_files": ["employee-onboarding.md"]
+    },
+    {
+      "query": "ext:txt on-call support",
+      "relevant_files": ["support-handoff.txt"]
     }
   ]
 }

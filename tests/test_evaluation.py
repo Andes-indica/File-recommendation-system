@@ -31,15 +31,25 @@ def test_evaluation_corpus_reports_ranking_and_latency(tmp_path):
         k=3,
     )
 
-    assert report["corpus"] == "local-retrieval-smoke-v1"
-    assert report["query_count"] == 4
-    assert report["indexed_documents"] == 4
-    assert report["summary"]["recall@3"] == 1.0
-    assert report["summary"]["mrr@3"] == 1.0
-    assert report["summary"]["ndcg@3"] == 1.0
+    assert report["corpus"] == "local-retrieval-regression-v3"
+    assert report["query_count"] == 22
+    assert report["indexed_documents"] == 15
+    assert report["summary"]["recall@3"] >= 0.9
+    assert report["summary"]["mrr@3"] >= 0.98
+    assert report["summary"]["ndcg@3"] >= 0.98
     assert report["summary"]["median_latency_ms"] >= 0
     assert report["summary"]["p95_latency_ms"] >= report["summary"]["median_latency_ms"]
-    assert all(query["retrieved_files"][0] in query["relevant_files"] for query in report["queries"])
+    assert report["strategies"]["metadata"] >= 1
+    assert report["strategies"]["filename"] >= 1
+    assert all(
+        set(query["relevant_files"]).issubset(query["retrieved_files"])
+        for query in report["queries"]
+    )
+    release_query = next(
+        query for query in report["queries"]
+        if query["query"] == "release milestones launch timeline"
+    )
+    assert release_query["retrieved_files"][0] == "product-roadmap.md"
 
 
 def test_evaluation_rejects_invalid_cutoff():

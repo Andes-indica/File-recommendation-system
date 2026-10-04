@@ -20,7 +20,9 @@ from .chunking import split_into_chunks
 
 
 MAX_FILE_BYTES = 1024 * 1024
+RRF_RANK_CONSTANT = 60
 TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
+FTS_OPERATORS = {"and", "or", "not", "near"}
 
 class EmbeddingProvider(Protocol):
     def encode(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
@@ -770,7 +772,7 @@ class IndexStore:
                         explanations.append("Located in or near the current working directory.")
                 positive_feedback, negative_feedback = feedback_signals.get(row["id"], (0, 0))
                 if positive_feedback:
-                    score += min(positive_feedback, 3) * 0.025
+                    score += min(positive_feedback, 3) * 0.05
                     explanations.append(f"Previously marked relevant {positive_feedback} time(s).")
                 if negative_feedback:
                     score -= min(negative_feedback, 3) * 0.04
@@ -874,7 +876,11 @@ class IndexStore:
         if not candidates:
             return 0.0
         best_confidence = 0.0
-        meaningful_terms = {term.casefold() for term in terms if len(term) > 2}
+        meaningful_terms = {
+            term.casefold()
+            for term in terms
+            if len(term) > 2 and term.casefold() not in FTS_OPERATORS
+        }
         for row, score, matched_by in candidates:
             candidate_terms = {
                 term.casefold()
@@ -967,7 +973,12 @@ class IndexStore:
 
     @staticmethod
     def _keyword_candidates(connection: sqlite3.Connection, terms: tuple[str, ...]):
-        expression = " OR ".join(f'"{term.replace(chr(34), "")}"' for term in terms)
+        searchable_terms = tuple(
+            term for term in terms if term.casefold() not in FTS_OPERATORS
+        )
+        if not searchable_terms:
+            return []
+        expression = " OR ".join(f'"{term.replace(chr(34), "")}"' for term in searchable_terms)
         try:
             rows = connection.execute(
                 """
@@ -1031,12 +1042,36 @@ class IndexStore:
         filename = self._filename_candidates(connection, terms)
         keyword = self._keyword_candidates(connection, terms)
         semantic = self._semantic_search_candidates(connection, query) if self.embedder else []
+        candidate_rows = {
+            row["id"]: row
+            for candidates in (filename, keyword, semantic)
+            for row, _score, _label in candidates
+        }
+        meaningful_terms = {
+            term.casefold()
+            for term in terms
+            if len(term) > 2 and term.casefold() not in FTS_OPERATORS
+        }
+        coverage = []
+        for row in candidate_rows.values():
+            candidate_terms = {
+                term.casefold()
+                for term in TOKEN.findall(f"{row['name']} {row['content']}")
+            }
+            matched_terms = meaningful_terms & candidate_terms
+            if matched_terms:
+                coverage.append(
+                    (row, len(matched_terms) / max(len(meaningful_terms), 1), "query term coverage")
+                )
+
         fused: dict[int, tuple[sqlite3.Row, float, set[str]]] = {}
-        for candidates in (filename, keyword, semantic):
-            for row, score, label in candidates:
+        for candidates in (filename, keyword, semantic, coverage):
+            candidates.sort(key=lambda item: (-item[1], item[0]["name"].casefold()))
+            for rank, (row, _score, label) in enumerate(candidates, start=1):
                 current = fused.get(row["id"], (row, 0.0, set()))
                 current[2].add(label)
-                fused[row["id"]] = (row, current[1] + score, current[2])
+                reciprocal_rank_score = RRF_RANK_CONSTANT / (RRF_RANK_CONSTANT + rank)
+                fused[row["id"]] = (row, current[1] + reciprocal_rank_score, current[2])
         return [
             (row, score, ", ".join(sorted(labels)))
             for row, score, labels in fused.values()
