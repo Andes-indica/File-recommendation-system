@@ -1,0 +1,45 @@
+{
+  "name": "authored-routing-smoke-v1",
+  "queries": [
+    {
+      "query": "release milestones launch timeline",
+      "relevant_files": ["product-roadmap.md"],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "team meeting action items and follow-up",
+      "relevant_files": ["team-meeting.md"],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "cloud infrastructure cutover rollback plan",
+      "relevant_files": ["cloud-migration-plan.md"],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "employee onboarding first week checklist",
+      "relevant_files": ["employee-onboarding.md"],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "travel reimbursement expenses and budget",
+      "relevant_files": ["travel-expenses.md", "finance-budget.md"],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "find the file product-roadmap.md",
+      "relevant_files": ["product-roadmap.md"],
+      "expected_strategy": "filename"
+    },
+    {
+      "query": "meeting notes",
+      "relevant_files": ["team-meeting.md"],
+      "expected_strategy": "keyword"
+    },
+    {
+      "query": "release timeline type:md",
+      "relevant_files": ["product-roadmap.md"],
+      "expected_strategy": "metadata"
+    }
+  ]
+}

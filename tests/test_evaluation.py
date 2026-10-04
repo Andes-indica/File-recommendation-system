@@ -55,3 +55,44 @@ def test_evaluation_corpus_reports_ranking_and_latency(tmp_path):
 def test_evaluation_rejects_invalid_cutoff():
     with pytest.raises(ValueError, match="k must be at least 1"):
         evaluate_corpus(FIXTURE_ROOT / "documents", FIXTURE_ROOT / "judgments.json", k=0)
+
+
+def test_evaluation_reports_expected_route_accuracy_only_for_labeled_queries():
+    report = evaluate_corpus(
+        FIXTURE_ROOT / "documents",
+        FIXTURE_ROOT / "human-queries.json",
+        k=3,
+    )
+
+    assert report["summary"]["route_accuracy"] == 1.0
+    assert report["summary"]["route_evaluated_queries"] == 8
+    assert report["planned_strategies"] == {
+        "hybrid": 5,
+        "filename": 1,
+        "keyword": 1,
+        "metadata": 1,
+    }
+    assert all(query["route_correct"] for query in report["queries"])
+
+
+def test_evaluation_does_not_report_route_accuracy_for_unlabeled_queries():
+    report = evaluate_corpus(
+        FIXTURE_ROOT / "documents",
+        FIXTURE_ROOT / "judgments.json",
+        k=3,
+    )
+
+    assert "route_accuracy" not in report["summary"]
+    assert "route_evaluated_queries" not in report["summary"]
+
+
+def test_evaluation_rejects_unsupported_expected_strategy(tmp_path):
+    judgments = tmp_path / "judgments.json"
+    judgments.write_text(
+        '{"queries":[{"query":"meeting notes","relevant_files":["team-meeting.md"],'
+        '"expected_strategy":"agent"}]}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="expected_strategy must be one of"):
+        evaluate_corpus(FIXTURE_ROOT / "documents", judgments, k=3)

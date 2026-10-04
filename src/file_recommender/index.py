@@ -759,6 +759,11 @@ class IndexStore:
                         score += min(len(topic_matches), 3) * 0.01
                         explanations.append("Matches topics in your file activity.")
 
+                    keyword_matches = candidate_terms & profile.get("keyword_terms", set())
+                    if keyword_matches:
+                        score += min(len(keyword_matches), 3) * 0.008
+                        explanations.append("Matches terms you frequently access.")
+
                     if file_activity.get("hours", {}).get(now.hour, 0):
                         score += 0.015
                         explanations.append("This file is often accessed at this hour (UTC).")
@@ -969,7 +974,31 @@ class IndexStore:
             f"SELECT * FROM documents WHERE {' AND '.join(filters)} ORDER BY modified_at DESC",
             parameters,
         ).fetchall()
-        return [(row, 1.0, "metadata") for row in rows]
+        text_query = re.sub(
+            r"\b(?:type|ext):[\w.]+|\b(?:after|before):\d{4}-\d{2}-\d{2}\b",
+            " ",
+            query,
+            flags=re.IGNORECASE,
+        )
+        query_terms = {
+            term.casefold()
+            for term in TOKEN.findall(text_query)
+            if len(term) > 2 and term.casefold() not in FTS_OPERATORS
+        }
+        if not query_terms:
+            return [(row, 1.0, "metadata") for row in rows]
+
+        ranked = []
+        for row in rows:
+            candidate_terms = {
+                term.casefold()
+                for term in TOKEN.findall(f"{row['name']} {row['content']}")
+            }
+            matched_terms = query_terms & candidate_terms
+            coverage = len(matched_terms) / len(query_terms)
+            matched_by = "metadata and query terms" if matched_terms else "metadata"
+            ranked.append((row, 1.0 + coverage, matched_by))
+        return ranked
 
     @staticmethod
     def _keyword_candidates(connection: sqlite3.Connection, terms: tuple[str, ...]):
@@ -1117,6 +1146,7 @@ class IndexStore:
         file_last_access: dict[int, str] = {}
         extensions: Counter[str] = Counter()
         topic_counts: Counter[str] = Counter()
+        keyword_counts: Counter[str] = Counter()
         hours: Counter[int] = Counter()
         weekdays: Counter[int] = Counter()
         file_hours: dict[int, Counter[int]] = {}
@@ -1150,12 +1180,13 @@ class IndexStore:
 
         for document_id, document in distinct_documents.items():
             weight = min(file_counts[document_id], 5)
-            words = {
+            words = [
                 word
                 for word in TOKEN.findall(f"{document['name']} {document['content']}".casefold())
                 if len(word) >= 3 and word not in stop_words and not word.isdigit()
-            }
-            topic_counts.update({word: weight for word in words})
+            ]
+            topic_counts.update({word: weight for word in set(words)})
+            keyword_counts.update({word: 1 for word in words})
 
         top_topics = topic_counts.most_common(10)
         return {
@@ -1172,6 +1203,7 @@ class IndexStore:
             "extensions": dict(extensions),
             "topics": [{"term": term, "access_count": count} for term, count in top_topics],
             "topic_terms": {term for term, _ in top_topics},
+            "keyword_terms": {term for term, _ in keyword_counts.most_common(20)},
             "hours": dict(hours),
             "weekdays": dict(weekdays),
         }

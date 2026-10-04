@@ -9,6 +9,10 @@ import tempfile
 from typing import Sequence
 
 from .index import IndexStore
+from .planner import plan_query
+
+
+EXPECTED_STRATEGIES = {"filename", "metadata", "keyword", "semantic", "hybrid"}
 
 
 def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
@@ -51,6 +55,9 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
 
     per_query = []
     strategies: dict[str, int] = {}
+    planned_strategies: dict[str, int] = {}
+    route_correct = 0
+    route_evaluated = 0
     with tempfile.TemporaryDirectory(prefix="file-recommender-eval-") as temporary_directory:
         store = IndexStore(Path(temporary_directory) / "evaluation.sqlite3")
         indexing = store.index_directory(documents_root)
@@ -61,25 +68,42 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
                 raise ValueError("each judgment needs a non-empty query")
             if not isinstance(relevant_files, list) or not relevant_files:
                 raise ValueError("each judgment needs a non-empty relevant_files list")
+            expected_strategy = judgment.get("expected_strategy")
+            if expected_strategy is not None and (
+                not isinstance(expected_strategy, str)
+                or expected_strategy not in EXPECTED_STRATEGIES
+            ):
+                raise ValueError(
+                    "expected_strategy must be one of: "
+                    + ", ".join(sorted(EXPECTED_STRATEGIES))
+                )
 
             relevant = {str(name) for name in relevant_files}
+            planned_strategy = plan_query(query).strategy
             execution = store.search_with_diagnostics(query, limit=max(k, 10))
             retrieved = [Path(result.path).name for result in execution.results]
             strategies[execution.plan.strategy] = strategies.get(execution.plan.strategy, 0) + 1
-            per_query.append(
-                {
-                    "query": query,
-                    "relevant_files": sorted(relevant),
-                    "retrieved_files": retrieved[:k],
-                    f"recall@{k}": recall_at_k(retrieved, relevant, k),
-                    f"mrr@{k}": mean_reciprocal_rank(retrieved, relevant, k),
-                    f"ndcg@{k}": ndcg_at_k(retrieved, relevant, k),
-                    "confidence": execution.confidence,
-                    "latency_ms": execution.latency_ms,
-                    "strategy": execution.plan.strategy,
-                    "expanded": execution.expanded_query is not None,
-                }
-            )
+            planned_strategies[planned_strategy] = planned_strategies.get(planned_strategy, 0) + 1
+            row = {
+                "query": query,
+                "relevant_files": sorted(relevant),
+                "retrieved_files": retrieved[:k],
+                f"recall@{k}": recall_at_k(retrieved, relevant, k),
+                f"mrr@{k}": mean_reciprocal_rank(retrieved, relevant, k),
+                f"ndcg@{k}": ndcg_at_k(retrieved, relevant, k),
+                "confidence": execution.confidence,
+                "latency_ms": execution.latency_ms,
+                "strategy": execution.plan.strategy,
+                "planned_strategy": planned_strategy,
+                "expanded": execution.expanded_query is not None,
+            }
+            if expected_strategy is not None:
+                is_route_correct = planned_strategy == expected_strategy
+                route_evaluated += 1
+                route_correct += is_route_correct
+                row["expected_strategy"] = expected_strategy
+                row["route_correct"] = is_route_correct
+            per_query.append(row)
 
     latencies = [float(result["latency_ms"]) for result in per_query]
     sorted_latencies = sorted(latencies)
@@ -92,6 +116,9 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
             "p95_latency_ms": round(sorted_latencies[p95_index], 3),
         }
     )
+    if route_evaluated:
+        summary["route_accuracy"] = round(route_correct / route_evaluated, 4)
+        summary["route_evaluated_queries"] = route_evaluated
     return {
         "corpus": corpus.get("name", judgments_file.stem),
         "k": k,
@@ -100,6 +127,7 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
         "skipped_documents": indexing["skipped"],
         "summary": summary,
         "strategies": strategies,
+        "planned_strategies": planned_strategies,
         "queries": per_query,
     }
 

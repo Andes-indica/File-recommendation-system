@@ -1,13 +1,16 @@
 # Proposed vs Implemented Features
 
-The architecture documents describe the target system. This matrix tracks the current local implementation; optional integrations are inactive unless explicitly configured.
+The [project blueprint](./project-blueprint.md) is the canonical source for
+product intent, target architecture, invariants, and phased acceptance criteria.
+This matrix tracks the current local implementation; optional integrations are
+inactive unless explicitly configured.
 
 | Proposed capability | Status | Current implementation and limits |
 | --- | --- | --- |
 | Natural-language file queries | Implemented, rule-based | Deterministic planner selects filename, metadata, keyword, hybrid, or semantic routing from query shape and supported filters. |
 | LLM query understanding | Optional, partial | OpenAI-compatible chat-completions adapter runs only for longer hybrid queries when configured. It receives only the query, has a 3-second timeout, and falls back to local routing. |
 | Filename search | Implemented | Matches indexed filenames; results are returned at file level. |
-| Metadata search | Implemented, limited filters | Supports extension (`type:`/`ext:`) and modified-date (`after:`/`before:`) filters. Other proposed metadata filters are not implemented. |
+| Metadata search | Implemented, limited filters | Supports extension (`type:`/`ext:`) and modified-date (`after:`/`before:`) filters; accompanying text terms rank within the filtered set. Other proposed metadata filters are not implemented. |
 | Keyword search | Implemented | SQLite FTS5 searches overlapping document chunks and aggregates matches to the parent file. |
 | Semantic search | Optional | Local Sentence Transformers embeddings are persisted per chunk; requires `FILE_RECOMMENDER_MODEL`. |
 | Hybrid retrieval and fusion | Implemented, heuristic | Combines filename, FTS5, optional semantic ranks, and query-term coverage using reciprocal-rank fusion. It is not a trained fusion model and needs validation on reviewed user queries. |
@@ -24,12 +27,12 @@ The architecture documents describe the target system. This matrix tracks the cu
 | Chunking and vector persistence | Implemented, local SQLite | Deterministic 1,000-character chunks with 150-character overlap; embeddings are cached by chunk content and model ID. |
 | Agent state graph | Not implemented as a graph runtime | Search is a Python pipeline with bounded branches and fallbacks; there is no LangGraph or persisted agent-state execution. |
 | Production storage and hardened multi-user security | Partial / planned | OIDC verification and file ACLs are implemented, but SQLite is development storage. Production secret/key operations, opaque-token introspection, PostgreSQL deployment, and shared vector infrastructure remain unimplemented. The audit listing token is a separate shared local control. |
-| Retrieval evaluation harness | Implemented, synthetic regression baseline | Runs 22 labeled queries against 15 synthetic documents and reports Recall@k, MRR@k, nDCG@k, median/p95 retrieval latency, routing counts, and per-query rankings. It covers hybrid, filename, and metadata routing, multiple relevant files, topic confounders, and filler-word cases. |
-| Representative quality/latency benchmarks | Planned | The synthetic set is not a reviewed real-user judgment corpus; domain coverage, relevance review, confidence intervals, and repeated/warm latency runs are still needed. |
+| Retrieval evaluation harness | Implemented, regression baseline | Runs 22 synthetic judgments and reports Recall@k, MRR@k, nDCG@k, median/p95 retrieval latency, route counts, and per-query rankings. A separate eight-query authored smoke corpus labels expected routes and reports route accuracy across hybrid, filename, keyword, and metadata strategies. |
+| Representative quality/latency benchmarks | Prototype / partial | The authored smoke set is not a substantial independently reviewed real-user judgment set. Domain coverage, independent relevance review, confidence intervals, semantic-route evaluation, and repeated/warm latency runs remain needed. |
 
 ## Suggested Next Steps
 
-1. Build a reviewed, diverse real-user query corpus with relevant files and expected retrieval strategies; measure routing accuracy, Recall@k, MRR/nDCG, and latency before further tuning.
-2. Calibrate planner complexity thresholds and fusion weights against that corpus; keep the synthetic set as a fast regression check.
+1. Follow the acceptance criteria in the [project blueprint](./project-blueprint.md), beginning with route-labeled evaluation and a reviewed corpus.
+2. Calibrate planner thresholds and fusion weights against that corpus; keep the synthetic set as a fast regression check.
 3. Add a graph orchestration runtime only if conditional branches, retries, or observability outgrow the current service pipeline.
-4. Add OCR and other remaining formats, with representative fixtures and format-specific safety limits.
+4. Add OCR and other remaining formats only when user need and representative fixtures justify the added extraction risk.

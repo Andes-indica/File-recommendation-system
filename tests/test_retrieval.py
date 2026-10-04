@@ -2,11 +2,13 @@ import re
 import json
 import sqlite3
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from file_recommender.api import create_app
+from file_recommender.evaluation import evaluate_corpus
 from file_recommender.index import IndexStore
 from file_recommender.planner import plan_query
 from file_recommender.query_understanding import QueryAnalysis
@@ -59,10 +61,33 @@ class StaticQueryAnalyzer:
 def test_planner_routes_queries_by_intent():
     assert plan_query("quarterly report type:md").strategy == "metadata"
     assert plan_query("filename project-plan.md").strategy == "filename"
+    assert plan_query("employee-onboarding.md").strategy == "filename"
+    assert plan_query("find the file launch-plan.md").strategy == "filename"
+    assert plan_query("pdf version of the product roadmap").strategy == "filename"
     assert plan_query("meeting notes").strategy == "keyword"
     assert plan_query("find the launch meeting notes").strategy == "hybrid"
     assert plan_query("similar to driving", semantic_available=True).strategy == "semantic"
     assert plan_query("similar to driving").strategy == "hybrid"
+
+
+def test_authored_routing_smoke_corpus_stays_consistent():
+    fixture_root = Path(__file__).parent / "fixtures" / "evaluation"
+    report = evaluate_corpus(
+        fixture_root / "documents",
+        fixture_root / "human-queries.json",
+        k=3,
+    )
+
+    assert report["query_count"] == 8
+    assert report["summary"]["recall@3"] >= 0.8
+    assert report["summary"]["mrr@3"] >= 0.8
+    assert report["summary"]["ndcg@3"] >= 0.8
+    assert report["summary"]["route_accuracy"] == 1.0
+    assert report["summary"]["route_evaluated_queries"] == 8
+    assert report["planned_strategies"]["filename"] == 1
+    assert report["planned_strategies"]["keyword"] == 1
+    assert report["planned_strategies"]["metadata"] == 1
+    assert sum(report["strategies"].values()) == 8
 
 
 def test_index_and_search_return_explainable_recommendations(tmp_path):
@@ -121,6 +146,45 @@ def test_metadata_filters_by_extension(tmp_path):
 
     assert plan.strategy == "metadata"
     assert [result.name for result in results] == ["notes.md"]
+
+
+def test_metadata_filter_ranks_remaining_query_terms(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "product-roadmap.md").write_text(
+        "Release milestones and launch timeline", encoding="utf-8"
+    )
+    (source / "meeting-notes.md").write_text(
+        "Weekly team meeting discussion and action items", encoding="utf-8"
+    )
+    (source / "product-roadmap.txt").write_text(
+        "Release milestones and launch timeline", encoding="utf-8"
+    )
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+
+    plan, results = store.search("release timeline type:md")
+
+    assert plan.strategy == "metadata"
+    assert results[0].name == "product-roadmap.md"
+    assert "metadata and query terms" in results[0].explanation
+    assert all(result.extension == ".md" for result in results)
+
+
+def test_metadata_only_filter_keeps_all_matching_files(tmp_path):
+    source = tmp_path / "files"
+    source.mkdir()
+    (source / "alpha.txt").write_text("alpha content", encoding="utf-8")
+    (source / "beta.txt").write_text("beta content", encoding="utf-8")
+    (source / "notes.md").write_text("notes content", encoding="utf-8")
+    store = IndexStore(tmp_path / "index.sqlite3")
+    store.index_directory(source)
+
+    plan, results = store.search("type:txt")
+
+    assert plan.strategy == "metadata"
+    assert {result.name for result in results} == {"alpha.txt", "beta.txt"}
+    assert all("Matched by metadata (" in result.explanation for result in results)
 
 
 def test_semantic_search_finds_related_meaning_and_caches_embeddings(tmp_path):

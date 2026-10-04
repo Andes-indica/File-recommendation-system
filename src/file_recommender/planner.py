@@ -8,9 +8,18 @@ METADATA_FILTER = re.compile(
     r"\b(?:type|ext):[\w.]+|\b(?:after|before):\d{4}-\d{2}-\d{2}\b",
     re.IGNORECASE,
 )
-FILENAME_INTENT = re.compile(r"\b(?:file|filename|named)\b", re.IGNORECASE)
+EXPLICIT_FILENAME = re.compile(
+    r"(?:^|[\s/\\\"'\(\[\{])(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}(?=$|[\s/\\\"'\)\]\}])",
+    re.IGNORECASE,
+)
+FILENAME_INTENT = re.compile(r"\b(?:file|filename|named|basename|path)\b", re.IGNORECASE)
 SEMANTIC_INTENT = re.compile(
     r"\b(?:similar to|related to|about|conceptually|meaning of|in other words)\b",
+    re.IGNORECASE,
+)
+FILE_EXTENSION_TOKENS = (".md", ".txt", ".rst", ".docx", ".pdf", ".xlsx", ".pptx")
+EXTENSION_TERM = re.compile(
+    r"\b(?:md|txt|rst|docx|pdf|xlsx|pptx)\b",
     re.IGNORECASE,
 )
 TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
@@ -35,7 +44,11 @@ def plan_query(query: str, semantic_available: bool = False) -> RetrievalPlan:
             terms,
         )
 
-    if FILENAME_INTENT.search(cleaned) or any("." in term for term in terms):
+    explicit_filename = bool(EXPLICIT_FILENAME.search(cleaned))
+    has_extension_term = any(
+        term.lower().endswith(FILE_EXTENSION_TOKENS) for term in terms
+    ) or bool(EXTENSION_TERM.search(cleaned))
+    if FILENAME_INTENT.search(cleaned) or explicit_filename or has_extension_term:
         return RetrievalPlan(
             "filename",
             "The query points to a specific name or file extension.",

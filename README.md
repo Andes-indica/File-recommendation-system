@@ -2,7 +2,9 @@
 
 An incremental, local-first implementation of the file discovery architecture. It indexes supported local documents, routes queries across lexical and optional semantic retrieval, and personalizes results using supplied working context and recorded activity.
 
-See [the proposed-vs-implemented feature matrix](docs/feature-status.md) for current status, limitations, and recommended next milestones.
+See the [project blueprint](docs/project-blueprint.md) for canonical intent,
+target architecture, implementation snapshot, and delivery plan. The
+[feature-status matrix](docs/feature-status.md) provides a shorter status view.
 
 ![System architecture](docs/image-1.png)
 
@@ -174,5 +176,19 @@ python -m file_recommender.evaluation \
 ```
 
 The evaluator builds a temporary SQLite index and prints JSON containing Recall@k, MRR@k, nDCG@k, median and p95 per-query retrieval latency, strategy counts, and per-query rankings. Judgments list relevant filenames in `relevant_files`. The bundled 22-query corpus covers 15 synthetic documents, including hybrid, filename, and metadata routes, multi-relevant queries, and near-topic confounders. Hybrid retrieval fuses filename, FTS5, optional semantic ranks, and query-term coverage with reciprocal-rank fusion. The current lexical baseline reports Recall@3 1.00, MRR@3 1.0000, and nDCG@3 0.9964 on this set. One multi-relevant travel/budget query still places its second relevant file below a related onboarding result. This is a regression set, not a reviewed real-user corpus or evidence of production retrieval quality.
+
+An additional eight-query authored routing smoke set includes `expected_strategy`
+labels and reports `route_accuracy` separately from ranking metrics:
+
+```bash
+python -m file_recommender.evaluation \
+  --documents tests/fixtures/evaluation/documents \
+  --judgments tests/fixtures/evaluation/human-queries.json \
+  --k 3
+```
+
+This small smoke set is not an independently reviewed or representative user
+benchmark. See the [project blueprint](docs/project-blueprint.md) for the
+evaluation roadmap and acceptance criteria.
 
 Run tests with `pytest`.
