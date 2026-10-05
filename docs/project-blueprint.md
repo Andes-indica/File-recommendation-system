@@ -81,7 +81,7 @@ scheme for turning the requirements into a single percentage.
 | Explanations and diagnostics | Retrieval/personalization explanations, confidence, route, candidate count, rerank decision, latency | No calibrated confidence guarantee or service-level performance data |
 | Identity and file permissions | Optional static tokens or OIDC JWT; owner/read ACLs | Local prototype; no group/inherited ACLs or production identity operations |
 | Audit | Local SQLite append-only events and separately protected listing endpoint | Not a tamper-proof or compliance-grade audit system |
-| Evaluation | Synthetic ranking regression corpus and a small authored human-style query smoke corpus | Not a substantial independently reviewed real-user benchmark; routing accuracy and uncertainty/performance studies are limited |
+| Evaluation | Synthetic ranking regression corpus and an expanded 30-query authored synthetic set with provenance metadata; reports aggregate and per-planned-route ranking/latency metrics plus labeled route and no-match measures | Current lexical-only authored baseline is MRR@3 0.9423, nDCG@3 0.9574, and 0.25 no-match false-positive rate; not independently reviewed real-user evidence |
 | Persistence and operations | SQLite, local process, local optional models | No production storage abstraction, deployment topology, backup/recovery, or shared vector service |
 | Agent runtime | Bounded Python service pipeline | No graph runtime; this is intentionally not a blocker unless workflow complexity warrants one |
 
@@ -95,26 +95,41 @@ For the compact status table, see [feature-status.md](./feature-status.md).
 - Add expected planner strategy labels to evaluation judgments and report route
   accuracy separately from retrieval ranking metrics. The evaluator now reports
   deterministic planner accuracy and planned route counts separately from the
-  effective search strategy after any expansion; the authored smoke corpus has
-  eight labeled cases across hybrid, filename, keyword, and metadata routes.
-- Keep the synthetic corpus as a regression suite; keep small authored examples
-  clearly labeled as smoke coverage, not representative user research.
+  effective search strategy after any expansion; the authored synthetic corpus
+  now has 30 judgments across lexical hybrid, filename, keyword, metadata, and
+  explicit no-match behavior. The evaluator reports no-match
+  false-positive rate separately and excludes no-match queries from aggregate
+  relevance metrics.
+- Keep the 22-query synthetic corpus as a ranking regression suite and the
+  expanded authored set as route/ranking smoke coverage, not representative
+  user research. The 30-query authored baseline has Recall@3 1.00, MRR@3
+  0.9423, nDCG@3 0.9574, expected-route accuracy 1.00, and no-match
+  false-positive rate 0.25; the non-perfect measures are deliberately retained
+  to make current failure cases visible. Semantic route labels are not used in
+  this lexical-only evaluator; model-backed evaluation remains future work.
+- Current authored misses include incident credentials ranked below an
+  unrelated camera guide, overnight escalation ranked below an incident
+  review, travel receipt instructions ranked below an unrelated camera guide,
+  and a lunar-rover no-match query returning a vehicle-maintenance file.
 - Build a larger, permission-safe, reviewed query set before tuning weights.
-- Acceptance remaining: grow and review the corpus, then add optional semantic
-  route cases where model-backed evaluation is available. The unlabeled
+- Acceptance remaining: grow and independently review real-user judgments,
+  then add optional semantic route cases where model-backed evaluation is
+  available. The unlabeled
   synthetic corpus continues to omit route-accuracy claims.
 
 ### Phase 2 — Calibrate bounded routing and ranking
 
 - Expand the reviewed corpus across query lengths, explicit filters, filenames,
   synonyms, ambiguous intent, no-match cases, and multiple relevant files.
-- Compare deterministic planner routes with expected routes; report per-route
-  quality, Recall@k, MRR, nDCG, and latency.
+- Compare deterministic planner routes with expected routes; the evaluator now
+  reports per-planned-route query counts, Recall@k, MRR, nDCG, and latency,
+  keeping no-match false positives separate from ranking metrics.
 - Combined extension/date-filter queries now rank filtered documents by overlap
   with the remaining text terms; filter-only searches still return all matches.
 - Tune thresholds/fusion only where repeated results show a measurable gain.
-- Acceptance: changes improve a declared quality/latency target without
-  regressing existing fixtures; report corpus size and limitations.
+- Acceptance remaining: apply this breakdown to a larger reviewed corpus and
+  show any tuning improves a declared quality/latency target without regressing
+  existing fixtures; report corpus size and limitations.
 
 ### Phase 3 — Complete agentic retrieval reasoning
 

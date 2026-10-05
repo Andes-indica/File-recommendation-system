@@ -1,0 +1,221 @@
+{
+  "name": "authored-synthetic-benchmark-v3",
+  "queries": [
+    {
+      "query": "release milestones launch timeline",
+      "relevant_files": [
+        "product-roadmap.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "team meeting action items and follow-up",
+      "relevant_files": [
+        "team-meeting.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "cloud infrastructure cutover rollback plan",
+      "relevant_files": [
+        "cloud-migration-plan.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "employee onboarding first week checklist",
+      "relevant_files": [
+        "employee-onboarding.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "travel reimbursement expenses and budget",
+      "relevant_files": [
+        "travel-expenses.md",
+        "finance-budget.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "find the file product-roadmap.md",
+      "relevant_files": [
+        "product-roadmap.md"
+      ],
+      "expected_strategy": "filename"
+    },
+    {
+      "query": "meeting notes",
+      "relevant_files": [
+        "team-meeting.md"
+      ],
+      "expected_strategy": "keyword"
+    },
+    {
+      "query": "release timeline type:md",
+      "relevant_files": [
+        "product-roadmap.md"
+      ],
+      "expected_strategy": "metadata"
+    },
+    {
+      "query": "find the file nebula-xylophone-blueprint.odt",
+      "relevant_files": [],
+      "expected_strategy": "filename",
+      "expected_no_match": true
+    },
+    {
+      "query": "oil changes and tire inflation",
+      "relevant_files": [
+        "vehicle-maintenance.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "portrait camera ISO aperture settings",
+      "relevant_files": [
+        "camera-photography.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "seasonal watering and pruning calendar",
+      "relevant_files": [
+        "garden-care.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "system design interview hiring decision",
+      "relevant_files": [
+        "hiring-interview.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "restore service after database failure",
+      "relevant_files": [
+        "backup-recovery.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "rotate credentials after exposure",
+      "relevant_files": [
+        "security-incident-review.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "overnight incident escalation rota",
+      "relevant_files": [
+        "support-handoff.txt"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "product feedback from app users",
+      "relevant_files": [
+        "customer-feedback.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "quarterly department spending limits",
+      "relevant_files": [
+        "finance-budget.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "cloud rollback and database replication",
+      "relevant_files": [
+        "cloud-migration-plan.md",
+        "backup-recovery.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "planning blockers and sprint actions",
+      "relevant_files": [
+        "sprint-retrospective.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "type:md camera settings",
+      "relevant_files": [
+        "camera-photography.md"
+      ],
+      "expected_strategy": "metadata"
+    },
+    {
+      "query": "show txt on-call escalation",
+      "relevant_files": [
+        "support-handoff.txt"
+      ],
+      "expected_strategy": "filename"
+    },
+    {
+      "query": "how to submit business trip hotel receipts",
+      "relevant_files": [
+        "travel-expenses.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "lunar rover engine specification",
+      "relevant_files": [],
+      "expected_strategy": "hybrid",
+      "expected_no_match": true
+    },
+    {
+      "query": "vehicle maintenance service intervals and repair guidance",
+      "relevant_files": [
+        "vehicle-maintenance.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "garden planting flowers and watering calendar",
+      "relevant_files": [
+        "garden-care.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "product roadmap for upcoming launch milestones",
+      "relevant_files": [
+        "product-roadmap.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "before:1900-01-01 type:md camera settings",
+      "relevant_files": [],
+      "expected_strategy": "metadata",
+      "expected_no_match": true
+    },
+    {
+      "query": "department budget planning and travel reimbursements",
+      "relevant_files": [
+        "finance-budget.md",
+        "travel-expenses.md"
+      ],
+      "expected_strategy": "hybrid"
+    },
+    {
+      "query": "find the file asteroid-landing-playbook.pdf",
+      "relevant_files": [],
+      "expected_strategy": "filename",
+      "expected_no_match": true
+    }
+  ],
+  "provenance": {
+    "source": "authored synthetic benchmark",
+    "derived_from": "tests/fixtures/evaluation/documents",
+    "method": "Manually authored from the existing fixture corpus for route and no-match smoke coverage.",
+    "scope": "Regression and route validation only; not representative user research or ranking training data.",
+    "notes": "Only existing fixture documents were used; no ranking weights or document contents were tuned from this benchmark."
+  }
+}

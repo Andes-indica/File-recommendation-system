@@ -175,20 +175,29 @@ python -m file_recommender.evaluation \
   --k 3
 ```
 
-The evaluator builds a temporary SQLite index and prints JSON containing Recall@k, MRR@k, nDCG@k, median and p95 per-query retrieval latency, strategy counts, and per-query rankings. Judgments list relevant filenames in `relevant_files`. The bundled 22-query corpus covers 15 synthetic documents, including hybrid, filename, and metadata routes, multi-relevant queries, and near-topic confounders. Hybrid retrieval fuses filename, FTS5, optional semantic ranks, and query-term coverage with reciprocal-rank fusion. The current lexical baseline reports Recall@3 1.00, MRR@3 1.0000, and nDCG@3 0.9964 on this set. One multi-relevant travel/budget query still places its second relevant file below a related onboarding result. This is a regression set, not a reviewed real-user corpus or evidence of production retrieval quality.
+The evaluator builds a temporary SQLite index and prints JSON containing Recall@k, MRR@k, nDCG@k, aggregate and per-planned-route median/p95 retrieval latency and ranking metrics, route counts, and per-query results. Judgments list relevant filenames in `relevant_files`. The bundled 22-query corpus covers 15 synthetic documents, including hybrid, filename, and metadata routes, multi-relevant queries, and near-topic confounders. Hybrid retrieval fuses filename, FTS5, optional semantic ranks, and query-term coverage with reciprocal-rank fusion. The current lexical baseline reports Recall@3 1.00, MRR@3 1.0000, and nDCG@3 0.9964 on this set. One multi-relevant travel/budget query still places its second relevant file below a related onboarding result. This is a regression set, not a reviewed real-user corpus or evidence of production retrieval quality.
 
-An additional eight-query authored routing smoke set includes `expected_strategy`
-labels and reports `route_accuracy` separately from ranking metrics:
+An expanded 30-query authored synthetic benchmark includes `expected_strategy`
+labels and explicit no-match cases. The corpus is labeled with provenance
+metadata declaring it was authored from the existing fixture docs. It runs
+without an embedding model, so its route metrics do not claim semantic routing.
+It reports `route_accuracy` and `no_match_false_positive_rate` separately from
+ranking metrics. Queries labeled as no-match are excluded from aggregate
+relevance-ranking metrics:
 
 ```bash
 python -m file_recommender.evaluation \
   --documents tests/fixtures/evaluation/documents \
-  --judgments tests/fixtures/evaluation/human-queries.json \
+  --judgments tests/fixtures/evaluation/authored-queries.json \
   --k 3
 ```
 
-This small smoke set is not an independently reviewed or representative user
-benchmark. See the [project blueprint](docs/project-blueprint.md) for the
-evaluation roadmap and acceptance criteria.
+The current authored-set baseline is Recall@3 1.00, MRR@3 0.9423,
+nDCG@3 0.9574, expected-route accuracy 1.00, and no-match false-positive rate
+0.25. The remaining MRR/nDCG and false-positive rate expose weak-ranking and
+out-of-domain cases. This small authored set is not independently reviewed or
+representative user data. See the
+[project blueprint](docs/project-blueprint.md) for the evaluation roadmap and
+acceptance criteria.
 
 Run tests with `pytest`.

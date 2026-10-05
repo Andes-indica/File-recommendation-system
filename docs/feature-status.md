@@ -27,12 +27,12 @@ inactive unless explicitly configured.
 | Chunking and vector persistence | Implemented, local SQLite | Deterministic 1,000-character chunks with 150-character overlap; embeddings are cached by chunk content and model ID. |
 | Agent state graph | Not implemented as a graph runtime | Search is a Python pipeline with bounded branches and fallbacks; there is no LangGraph or persisted agent-state execution. |
 | Production storage and hardened multi-user security | Partial / planned | OIDC verification and file ACLs are implemented, but SQLite is development storage. Production secret/key operations, opaque-token introspection, PostgreSQL deployment, and shared vector infrastructure remain unimplemented. The audit listing token is a separate shared local control. |
-| Retrieval evaluation harness | Implemented, regression baseline | Runs 22 synthetic judgments and reports Recall@k, MRR@k, nDCG@k, median/p95 retrieval latency, route counts, and per-query rankings. A separate eight-query authored smoke corpus labels expected routes and reports route accuracy across hybrid, filename, keyword, and metadata strategies. |
-| Representative quality/latency benchmarks | Prototype / partial | The authored smoke set is not a substantial independently reviewed real-user judgment set. Domain coverage, independent relevance review, confidence intervals, semantic-route evaluation, and repeated/warm latency runs remain needed. |
+| Retrieval evaluation harness | Implemented, regression baseline | Runs 22 synthetic judgments and reports Recall@k, MRR@k, nDCG@k, aggregate and per-planned-route median/p95 latency and ranking metrics, route counts, and per-query results. A separate expanded 30-query authored synthetic corpus carries provenance metadata, covers available lexical routes, and measures false positives on explicit no-match cases. |
+| Representative quality/latency benchmarks | Prototype / partial | The expanded authored set exposes MRR@3 0.9423, nDCG@3 0.9574, and no-match false-positive rate 0.25, but is not independently reviewed real-user data. Independent relevance review, confidence intervals, repeated/warm latency runs, and model-backed semantic evaluation remain needed. |
 
 ## Suggested Next Steps
 
-1. Follow the acceptance criteria in the [project blueprint](./project-blueprint.md), beginning with route-labeled evaluation and a reviewed corpus.
-2. Calibrate planner thresholds and fusion weights against that corpus; keep the synthetic set as a fast regression check.
+1. Build an independently reviewed, permission-safe query set with expected routes; keep this authored synthetic set as a separate regression/smoke benchmark.
+2. Calibrate planner thresholds and fusion weights only against reviewed judgments; use the authored failures to create targeted regression cases.
 3. Add a graph orchestration runtime only if conditional branches, retries, or observability outgrow the current service pipeline.
 4. Add OCR and other remaining formats only when user need and representative fixtures justify the added extraction risk.

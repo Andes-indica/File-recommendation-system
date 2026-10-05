@@ -41,6 +41,40 @@ def ndcg_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     return dcg / ideal_dcg if ideal_dcg else 0.0
 
 
+def _summarize_route(
+    rows: list[dict[str, object]],
+    metric_names: tuple[str, ...],
+) -> dict[str, object]:
+    ranked_rows = [row for row in rows if row["relevant_files"]]
+    latencies = sorted(float(row["latency_ms"]) for row in rows)
+    p95_index = max(0, math.ceil(0.95 * len(latencies)) - 1)
+    summary: dict[str, object] = {
+        "query_count": len(rows),
+        "ranking_evaluated_queries": len(ranked_rows),
+        "median_latency_ms": round(statistics.median(latencies), 3),
+        "p95_latency_ms": round(latencies[p95_index], 3),
+    }
+    if ranked_rows:
+        summary.update(
+            {
+                name: round(
+                    statistics.fmean(float(row[name]) for row in ranked_rows),
+                    4,
+                )
+                for name in metric_names
+            }
+        )
+    no_match_rows = [row for row in rows if row.get("expected_no_match")]
+    if no_match_rows:
+        false_positives = sum(bool(row["no_match_false_positive"]) for row in no_match_rows)
+        summary["no_match_evaluated_queries"] = len(no_match_rows)
+        summary["no_match_false_positive_rate"] = round(
+            false_positives / len(no_match_rows),
+            4,
+        )
+    return summary
+
+
 def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path, k: int = 5) -> dict[str, object]:
     if k < 1:
         raise ValueError("k must be at least 1")
@@ -58,6 +92,8 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
     planned_strategies: dict[str, int] = {}
     route_correct = 0
     route_evaluated = 0
+    no_match_evaluated = 0
+    no_match_false_positives = 0
     with tempfile.TemporaryDirectory(prefix="file-recommender-eval-") as temporary_directory:
         store = IndexStore(Path(temporary_directory) / "evaluation.sqlite3")
         indexing = store.index_directory(documents_root)
@@ -66,8 +102,17 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
             relevant_files = judgment.get("relevant_files")
             if not isinstance(query, str) or not query.strip():
                 raise ValueError("each judgment needs a non-empty query")
-            if not isinstance(relevant_files, list) or not relevant_files:
-                raise ValueError("each judgment needs a non-empty relevant_files list")
+            expected_no_match = judgment.get("expected_no_match", False)
+            if not isinstance(expected_no_match, bool):
+                raise ValueError("expected_no_match must be a boolean")
+            if not isinstance(relevant_files, list):
+                raise ValueError("each judgment needs a relevant_files list")
+            if expected_no_match and relevant_files:
+                raise ValueError("no-match judgments must have an empty relevant_files list")
+            if not expected_no_match and not relevant_files:
+                raise ValueError(
+                    "each judgment needs relevant_files unless expected_no_match is true"
+                )
             expected_strategy = judgment.get("expected_strategy")
             if expected_strategy is not None and (
                 not isinstance(expected_strategy, str)
@@ -79,7 +124,10 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
                 )
 
             relevant = {str(name) for name in relevant_files}
-            planned_strategy = plan_query(query).strategy
+            planned_strategy = plan_query(
+                query,
+                semantic_available=store.embedder is not None,
+            ).strategy
             execution = store.search_with_diagnostics(query, limit=max(k, 10))
             retrieved = [Path(result.path).name for result in execution.results]
             strategies[execution.plan.strategy] = strategies.get(execution.plan.strategy, 0) + 1
@@ -97,6 +145,12 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
                 "planned_strategy": planned_strategy,
                 "expanded": execution.expanded_query is not None,
             }
+            if expected_no_match:
+                false_positive = bool(retrieved[:k])
+                row["expected_no_match"] = True
+                row["no_match_false_positive"] = false_positive
+                no_match_evaluated += 1
+                no_match_false_positives += false_positive
             if expected_strategy is not None:
                 is_route_correct = planned_strategy == expected_strategy
                 route_evaluated += 1
@@ -108,19 +162,33 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
     latencies = [float(result["latency_ms"]) for result in per_query]
     sorted_latencies = sorted(latencies)
     p95_index = max(0, math.ceil(0.95 * len(sorted_latencies)) - 1)
+    ranked_queries = [row for row in per_query if row["relevant_files"]]
     metric_names = (f"recall@{k}", f"mrr@{k}", f"ndcg@{k}")
-    summary = {name: round(statistics.fmean(float(row[name]) for row in per_query), 4) for name in metric_names}
+    summary = {
+        name: round(statistics.fmean(float(row[name]) for row in ranked_queries), 4)
+        for name in metric_names
+    } if ranked_queries else {}
     summary.update(
         {
+            "ranking_evaluated_queries": len(ranked_queries),
             "median_latency_ms": round(statistics.median(latencies), 3),
             "p95_latency_ms": round(sorted_latencies[p95_index], 3),
         }
     )
+    if no_match_evaluated:
+        summary["no_match_evaluated_queries"] = no_match_evaluated
+        summary["no_match_false_positive_rate"] = round(
+            no_match_false_positives / no_match_evaluated, 4
+        )
     if route_evaluated:
         summary["route_accuracy"] = round(route_correct / route_evaluated, 4)
         summary["route_evaluated_queries"] = route_evaluated
+    route_rows: dict[str, list[dict[str, object]]] = {}
+    for row in per_query:
+        route_rows.setdefault(str(row["planned_strategy"]), []).append(row)
     return {
         "corpus": corpus.get("name", judgments_file.stem),
+        "provenance": corpus.get("provenance"),
         "k": k,
         "query_count": len(per_query),
         "indexed_documents": indexing["indexed"],
@@ -128,6 +196,10 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
         "summary": summary,
         "strategies": strategies,
         "planned_strategies": planned_strategies,
+        "planned_strategy_metrics": {
+            strategy: _summarize_route(rows, metric_names)
+            for strategy, rows in sorted(route_rows.items())
+        },
         "queries": per_query,
     }
 

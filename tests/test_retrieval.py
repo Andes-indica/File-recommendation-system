@@ -70,24 +70,28 @@ def test_planner_routes_queries_by_intent():
     assert plan_query("similar to driving").strategy == "hybrid"
 
 
-def test_authored_routing_smoke_corpus_stays_consistent():
+def test_authored_synthetic_routing_corpus_stays_consistent():
     fixture_root = Path(__file__).parent / "fixtures" / "evaluation"
     report = evaluate_corpus(
         fixture_root / "documents",
-        fixture_root / "human-queries.json",
+        fixture_root / "authored-queries.json",
         k=3,
     )
 
-    assert report["query_count"] == 8
-    assert report["summary"]["recall@3"] >= 0.8
-    assert report["summary"]["mrr@3"] >= 0.8
-    assert report["summary"]["ndcg@3"] >= 0.8
+    assert report["query_count"] == 30
+    assert report["summary"]["recall@3"] >= 0.9
+    assert report["summary"]["mrr@3"] >= 0.9
+    assert report["summary"]["ndcg@3"] >= 0.9
     assert report["summary"]["route_accuracy"] == 1.0
-    assert report["summary"]["route_evaluated_queries"] == 8
-    assert report["planned_strategies"]["filename"] == 1
+    assert report["summary"]["route_evaluated_queries"] == 30
+    assert report["summary"]["ranking_evaluated_queries"] == 26
+    assert report["summary"]["no_match_false_positive_rate"] == 0.25
+    assert report["planned_strategies"]["hybrid"] == 22
+    assert report["planned_strategies"]["filename"] == 4
     assert report["planned_strategies"]["keyword"] == 1
-    assert report["planned_strategies"]["metadata"] == 1
-    assert sum(report["strategies"].values()) == 8
+    assert report["planned_strategies"]["metadata"] == 3
+    assert sum(report["strategies"].values()) == 30
+    assert report["provenance"]["source"] == "authored synthetic benchmark"
 
 
 def test_index_and_search_return_explainable_recommendations(tmp_path):
