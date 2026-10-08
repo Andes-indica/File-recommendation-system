@@ -127,6 +127,11 @@ For the compact status table, see [feature-status.md](./feature-status.md).
   review, travel receipt instructions ranked below an unrelated camera guide,
   and a lunar-rover no-match query returning a vehicle-maintenance file.
 - Build a larger, permission-safe, reviewed query set before tuning weights.
+- The evaluator now rejects relevance labels containing paths, references to
+  files that were not actually indexed, and duplicate indexed filenames that
+  would make basename judgments ambiguous. Keep private documents and raw user
+  queries outside the repository; record review method/status in corpus
+  provenance and maintain a separate holdout set.
 - Acceptance remaining: grow and independently review real-user judgments,
   then add optional semantic route cases where model-backed evaluation is
   available. The unlabeled

@@ -1,6 +1,7 @@
 """Repeatable offline retrieval evaluation for a labeled local corpus."""
 
 import argparse
+from collections import Counter
 import json
 import math
 from pathlib import Path
@@ -83,6 +84,8 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
         raise ValueError("documents_directory must be a directory")
     judgments_file = Path(judgments_path).expanduser().resolve(strict=True)
     corpus = json.loads(judgments_file.read_text(encoding="utf-8"))
+    if not isinstance(corpus, dict):
+        raise ValueError("judgments must be a JSON object")
     queries = corpus.get("queries")
     if not isinstance(queries, list) or not queries:
         raise ValueError("judgments must contain a non-empty 'queries' list")
@@ -97,7 +100,23 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
     with tempfile.TemporaryDirectory(prefix="file-recommender-eval-") as temporary_directory:
         store = IndexStore(Path(temporary_directory) / "evaluation.sqlite3")
         indexing = store.index_directory(documents_root)
-        for judgment in queries:
+        with store._connect() as connection:
+            indexed_names = [
+                row["name"]
+                for row in connection.execute("SELECT name FROM documents")
+            ]
+        duplicate_names = sorted(
+            name for name, count in Counter(indexed_names).items() if count > 1
+        )
+        if duplicate_names:
+            raise ValueError(
+                "evaluation documents must have unique filenames; duplicates: "
+                + ", ".join(duplicate_names)
+            )
+        available_names = set(indexed_names)
+        for query_number, judgment in enumerate(queries, start=1):
+            if not isinstance(judgment, dict):
+                raise ValueError(f"judgment {query_number} must be a JSON object")
             query = judgment.get("query")
             relevant_files = judgment.get("relevant_files")
             if not isinstance(query, str) or not query.strip():
@@ -107,11 +126,31 @@ def evaluate_corpus(documents_directory: str | Path, judgments_path: str | Path,
                 raise ValueError("expected_no_match must be a boolean")
             if not isinstance(relevant_files, list):
                 raise ValueError("each judgment needs a relevant_files list")
+            if any(
+                not isinstance(name, str)
+                or not name.strip()
+                or Path(name).name != name
+                or "\\" in name
+                for name in relevant_files
+            ):
+                raise ValueError(
+                    f"judgment {query_number} relevant_files must contain filenames only"
+                )
+            if len(set(relevant_files)) != len(relevant_files):
+                raise ValueError(
+                    f"judgment {query_number} relevant_files must not contain duplicates"
+                )
             if expected_no_match and relevant_files:
                 raise ValueError("no-match judgments must have an empty relevant_files list")
             if not expected_no_match and not relevant_files:
                 raise ValueError(
                     "each judgment needs relevant_files unless expected_no_match is true"
+                )
+            unknown_files = sorted(set(relevant_files) - available_names)
+            if unknown_files:
+                raise ValueError(
+                    f"judgment {query_number} references files not indexed from "
+                    f"documents_directory: {', '.join(unknown_files)}"
                 )
             expected_strategy = judgment.get("expected_strategy")
             if expected_strategy is not None and (

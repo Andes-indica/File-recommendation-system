@@ -159,6 +159,67 @@ def test_evaluation_rejects_unsupported_expected_strategy(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("relevant_files", "message"),
+    [
+        (["missing.md"], "references files not indexed"),
+        (["../team-meeting.md"], "filenames only"),
+        (["team-meeting.md", "team-meeting.md"], "must not contain duplicates"),
+    ],
+)
+def test_evaluation_rejects_unverifiable_relevance_judgments(
+    tmp_path,
+    relevant_files,
+    message,
+):
+    judgments = tmp_path / "judgments.json"
+    judgments.write_text(
+        json.dumps(
+            {
+                "queries": [
+                    {
+                        "query": "meeting notes",
+                        "relevant_files": relevant_files,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        evaluate_corpus(FIXTURE_ROOT / "documents", judgments, k=3)
+
+
+def test_evaluation_rejects_ambiguous_duplicate_document_filenames(tmp_path):
+    documents = tmp_path / "documents"
+    documents.mkdir()
+    (documents / "team-meeting.md").write_text(
+        (FIXTURE_ROOT / "documents" / "team-meeting.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    nested = documents / "nested"
+    nested.mkdir()
+    (nested / "team-meeting.md").write_text(
+        (FIXTURE_ROOT / "documents" / "team-meeting.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    judgments = tmp_path / "judgments.json"
+    judgments.write_text(
+        json.dumps(
+            {
+                "queries": [
+                    {"query": "meeting notes", "relevant_files": ["team-meeting.md"]}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must have unique filenames"):
+        evaluate_corpus(documents, judgments, k=3)
+
+
+@pytest.mark.parametrize(
     ("relevant_files", "expected_no_match", "message"),
     [
         ([], False, "unless expected_no_match is true"),
