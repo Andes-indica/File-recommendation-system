@@ -5,6 +5,21 @@ current implementation, and delivery roadmap. Update it when project scope or
 architecture changes. The [feature status matrix](./feature-status.md) is a
 short implementation snapshot; the [README](../README.md) is the operator guide.
 
+## Delivered local workspace (October 2026)
+
+The personal local application is now implemented with a React browser UI,
+asynchronous folder/upload ingestion, persistent jobs, incremental reconciliation,
+bounded LangGraph search, conversational refinements, previews/downloads,
+controlled personalization, explicit model setup, and backup/restore.
+
+The agreed release covers seven document formats and a 10,000-file personal
+library. SQLite/FTS5 plus native sqlite-vec distance queries replace the shared
+PostgreSQL/vector-service topology proposed in the initial diagrams. The
+[implementation specification](./implementation.md),
+[verification report](./verification.md), and [operations guide](./operations.md)
+describe the current release. The prototype assessments and delivery phases
+below are retained as historical baseline and longer-term research goals.
+
 ## Product intent
 
 Build a local-first intelligent file recommendation and retrieval system that:
@@ -58,7 +73,7 @@ must be minimized; indexed document contents are not sent to the query analyzer.
 Any future answer-generation model should receive only authorized retrieved
 evidence and return citations to those candidates.
 
-## Implementation snapshot
+## Prototype baseline before the workspace implementation
 
 | Stated objective | Current assessment | Evidence and remaining work |
 | --- | --- | --- |

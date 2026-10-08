@@ -1,0 +1,651 @@
+{
+  "name": "workspace-queries",
+  "provenance": {
+    "kind": "authored_synthetic",
+    "independently_reviewed": false,
+    "source": "Existing 15 synthetic documents; templates and labels are committed in scripts/build_evaluation_corpus.py.",
+    "purpose": "Regression evidence only; the holdout uses separate phrasing, not independently collected user data."
+  },
+  "queries": [
+    {
+      "query": "database backup verification",
+      "relevant_files": [
+        "backup-recovery.md"
+      ]
+    },
+    {
+      "query": "point-in-time recovery restore testing",
+      "relevant_files": [
+        "backup-recovery.md"
+      ]
+    },
+    {
+      "query": "disaster recovery contacts",
+      "relevant_files": [
+        "backup-recovery.md"
+      ]
+    },
+    {
+      "query": "service recovery objectives",
+      "relevant_files": [
+        "backup-recovery.md"
+      ]
+    },
+    {
+      "query": "find the file backup-recovery.md",
+      "relevant_files": [
+        "backup-recovery.md"
+      ]
+    },
+    {
+      "query": "database backup verification type:md",
+      "relevant_files": [
+        "backup-recovery.md"
+      ]
+    },
+    {
+      "query": "camera exposure aperture",
+      "relevant_files": [
+        "camera-photography.md"
+      ]
+    },
+    {
+      "query": "shutter speed ISO",
+      "relevant_files": [
+        "camera-photography.md"
+      ]
+    },
+    {
+      "query": "outdoor portraits composition",
+      "relevant_files": [
+        "camera-photography.md"
+      ]
+    },
+    {
+      "query": "photography image settings",
+      "relevant_files": [
+        "camera-photography.md"
+      ]
+    },
+    {
+      "query": "find the file camera-photography.md",
+      "relevant_files": [
+        "camera-photography.md"
+      ]
+    },
+    {
+      "query": "camera exposure aperture type:md",
+      "relevant_files": [
+        "camera-photography.md"
+      ]
+    },
+    {
+      "query": "staged service cutover rollback",
+      "relevant_files": [
+        "cloud-migration-plan.md"
+      ]
+    },
+    {
+      "query": "network dependencies database replication",
+      "relevant_files": [
+        "cloud-migration-plan.md"
+      ]
+    },
+    {
+      "query": "cloud infrastructure migration",
+      "relevant_files": [
+        "cloud-migration-plan.md"
+      ]
+    },
+    {
+      "query": "deployment milestones rollback windows",
+      "relevant_files": [
+        "cloud-migration-plan.md"
+      ]
+    },
+    {
+      "query": "find the file cloud-migration-plan.md",
+      "relevant_files": [
+        "cloud-migration-plan.md"
+      ]
+    },
+    {
+      "query": "staged service cutover rollback type:md",
+      "relevant_files": [
+        "cloud-migration-plan.md"
+      ]
+    },
+    {
+      "query": "mobile application feature requests",
+      "relevant_files": [
+        "customer-feedback.md"
+      ]
+    },
+    {
+      "query": "customer satisfaction themes",
+      "relevant_files": [
+        "customer-feedback.md"
+      ]
+    },
+    {
+      "query": "product release concerns",
+      "relevant_files": [
+        "customer-feedback.md"
+      ]
+    },
+    {
+      "query": "mobile users support follow-up",
+      "relevant_files": [
+        "customer-feedback.md"
+      ]
+    },
+    {
+      "query": "find the file customer-feedback.md",
+      "relevant_files": [
+        "customer-feedback.md"
+      ]
+    },
+    {
+      "query": "mobile application feature requests type:md",
+      "relevant_files": [
+        "customer-feedback.md"
+      ]
+    },
+    {
+      "query": "new employee laptop equipment",
+      "relevant_files": [
+        "employee-onboarding.md"
+      ]
+    },
+    {
+      "query": "account access orientation",
+      "relevant_files": [
+        "employee-onboarding.md"
+      ]
+    },
+    {
+      "query": "first-week training tasks",
+      "relevant_files": [
+        "employee-onboarding.md"
+      ]
+    },
+    {
+      "query": "employee setup checklist",
+      "relevant_files": [
+        "employee-onboarding.md"
+      ]
+    },
+    {
+      "query": "find the file employee-onboarding.md",
+      "relevant_files": [
+        "employee-onboarding.md"
+      ]
+    },
+    {
+      "query": "new employee laptop equipment type:md",
+      "relevant_files": [
+        "employee-onboarding.md"
+      ]
+    },
+    {
+      "query": "quarterly budget planning",
+      "relevant_files": [
+        "finance-budget.md"
+      ]
+    },
+    {
+      "query": "department spending limits",
+      "relevant_files": [
+        "finance-budget.md"
+      ]
+    },
+    {
+      "query": "forecast assumptions expenses",
+      "relevant_files": [
+        "finance-budget.md"
+      ]
+    },
+    {
+      "query": "finance budget forecast",
+      "relevant_files": [
+        "finance-budget.md"
+      ]
+    },
+    {
+      "query": "find the file finance-budget.md",
+      "relevant_files": [
+        "finance-budget.md"
+      ]
+    },
+    {
+      "query": "quarterly budget planning type:md",
+      "relevant_files": [
+        "finance-budget.md"
+      ]
+    },
+    {
+      "query": "planting flowers watering seedlings",
+      "relevant_files": [
+        "garden-care.md"
+      ]
+    },
+    {
+      "query": "pruning shrubs soil nutrients",
+      "relevant_files": [
+        "garden-care.md"
+      ]
+    },
+    {
+      "query": "seasonal garden calendar",
+      "relevant_files": [
+        "garden-care.md"
+      ]
+    },
+    {
+      "query": "garden care tracking nutrients",
+      "relevant_files": [
+        "garden-care.md"
+      ]
+    },
+    {
+      "query": "find the file garden-care.md",
+      "relevant_files": [
+        "garden-care.md"
+      ]
+    },
+    {
+      "query": "planting flowers watering seedlings type:md",
+      "relevant_files": [
+        "garden-care.md"
+      ]
+    },
+    {
+      "query": "backend engineering candidate interview",
+      "relevant_files": [
+        "hiring-interview.md"
+      ]
+    },
+    {
+      "query": "interviewer observations hiring decision",
+      "relevant_files": [
+        "hiring-interview.md"
+      ]
+    },
+    {
+      "query": "system design debrief",
+      "relevant_files": [
+        "hiring-interview.md"
+      ]
+    },
+    {
+      "query": "candidate interview feedback",
+      "relevant_files": [
+        "hiring-interview.md"
+      ]
+    },
+    {
+      "query": "find the file hiring-interview.md",
+      "relevant_files": [
+        "hiring-interview.md"
+      ]
+    },
+    {
+      "query": "backend engineering candidate interview type:md",
+      "relevant_files": [
+        "hiring-interview.md"
+      ]
+    },
+    {
+      "query": "release milestones launch timeline",
+      "relevant_files": [
+        "product-roadmap.md"
+      ]
+    },
+    {
+      "query": "software roadmap phases",
+      "relevant_files": [
+        "product-roadmap.md"
+      ]
+    },
+    {
+      "query": "next software release",
+      "relevant_files": [
+        "product-roadmap.md"
+      ]
+    },
+    {
+      "query": "product launch roadmap",
+      "relevant_files": [
+        "product-roadmap.md"
+      ]
+    },
+    {
+      "query": "find the file product-roadmap.md",
+      "relevant_files": [
+        "product-roadmap.md"
+      ]
+    },
+    {
+      "query": "release milestones launch timeline type:md",
+      "relevant_files": [
+        "product-roadmap.md"
+      ]
+    },
+    {
+      "query": "exposed access credentials token rotation",
+      "relevant_files": [
+        "security-incident-review.md"
+      ]
+    },
+    {
+      "query": "audit evidence containment actions",
+      "relevant_files": [
+        "security-incident-review.md"
+      ]
+    },
+    {
+      "query": "security response owners",
+      "relevant_files": [
+        "security-incident-review.md"
+      ]
+    },
+    {
+      "query": "incident review credentials",
+      "relevant_files": [
+        "security-incident-review.md"
+      ]
+    },
+    {
+      "query": "find the file security-incident-review.md",
+      "relevant_files": [
+        "security-incident-review.md"
+      ]
+    },
+    {
+      "query": "exposed access credentials token rotation type:md",
+      "relevant_files": [
+        "security-incident-review.md"
+      ]
+    },
+    {
+      "query": "sprint delivery blockers",
+      "relevant_files": [
+        "sprint-retrospective.md"
+      ]
+    },
+    {
+      "query": "planning process improvements",
+      "relevant_files": [
+        "sprint-retrospective.md"
+      ]
+    },
+    {
+      "query": "retrospective follow-up owners",
+      "relevant_files": [
+        "sprint-retrospective.md"
+      ]
+    },
+    {
+      "query": "sprint retrospective action items",
+      "relevant_files": [
+        "sprint-retrospective.md"
+      ]
+    },
+    {
+      "query": "find the file sprint-retrospective.md",
+      "relevant_files": [
+        "sprint-retrospective.md"
+      ]
+    },
+    {
+      "query": "sprint delivery blockers type:md",
+      "relevant_files": [
+        "sprint-retrospective.md"
+      ]
+    },
+    {
+      "query": "platform discussion decisions",
+      "relevant_files": [
+        "team-meeting.md"
+      ]
+    },
+    {
+      "query": "meeting minutes follow-up",
+      "relevant_files": [
+        "team-meeting.md"
+      ]
+    },
+    {
+      "query": "platform team action items",
+      "relevant_files": [
+        "team-meeting.md"
+      ]
+    },
+    {
+      "query": "team meeting discussion",
+      "relevant_files": [
+        "team-meeting.md"
+      ]
+    },
+    {
+      "query": "find the file team-meeting.md",
+      "relevant_files": [
+        "team-meeting.md"
+      ]
+    },
+    {
+      "query": "platform discussion decisions type:md",
+      "relevant_files": [
+        "team-meeting.md"
+      ]
+    },
+    {
+      "query": "business travel receipts reimbursement",
+      "relevant_files": [
+        "travel-expenses.md"
+      ]
+    },
+    {
+      "query": "hotel flight expenses",
+      "relevant_files": [
+        "travel-expenses.md"
+      ]
+    },
+    {
+      "query": "submission deadlines employee trips",
+      "relevant_files": [
+        "travel-expenses.md"
+      ]
+    },
+    {
+      "query": "travel reimbursement rules",
+      "relevant_files": [
+        "travel-expenses.md"
+      ]
+    },
+    {
+      "query": "find the file travel-expenses.md",
+      "relevant_files": [
+        "travel-expenses.md"
+      ]
+    },
+    {
+      "query": "business travel receipts reimbursement type:md",
+      "relevant_files": [
+        "travel-expenses.md"
+      ]
+    },
+    {
+      "query": "automobile engine oil",
+      "relevant_files": [
+        "vehicle-maintenance.md"
+      ]
+    },
+    {
+      "query": "tire pressure service intervals",
+      "relevant_files": [
+        "vehicle-maintenance.md"
+      ]
+    },
+    {
+      "query": "vehicle maintenance guide",
+      "relevant_files": [
+        "vehicle-maintenance.md"
+      ]
+    },
+    {
+      "query": "automobile maintenance intervals",
+      "relevant_files": [
+        "vehicle-maintenance.md"
+      ]
+    },
+    {
+      "query": "find the file vehicle-maintenance.md",
+      "relevant_files": [
+        "vehicle-maintenance.md"
+      ]
+    },
+    {
+      "query": "automobile engine oil type:md",
+      "relevant_files": [
+        "vehicle-maintenance.md"
+      ]
+    },
+    {
+      "query": "on-call rotation escalation",
+      "relevant_files": [
+        "support-handoff.txt"
+      ]
+    },
+    {
+      "query": "overnight response coverage",
+      "relevant_files": [
+        "support-handoff.txt"
+      ]
+    },
+    {
+      "query": "platform support handoff",
+      "relevant_files": [
+        "support-handoff.txt"
+      ]
+    },
+    {
+      "query": "incident escalation overnight",
+      "relevant_files": [
+        "support-handoff.txt"
+      ]
+    },
+    {
+      "query": "find the file support-handoff.txt",
+      "relevant_files": [
+        "support-handoff.txt"
+      ]
+    },
+    {
+      "query": "on-call rotation escalation type:txt",
+      "relevant_files": [
+        "support-handoff.txt"
+      ]
+    },
+    {
+      "query": "nebula xylophone blueprint",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "marine octopus taxonomy",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "medieval pottery archaeology",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "lunar rover telemetry",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "quantum superconductivity experiment",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "volcanic isotope dating",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "ballet choreography handbook",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "sourdough fermentation recipes",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "submarine sonar acoustics",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "renaissance sculpture catalogue",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "rainforest amphibian genetics",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "telescope exoplanet spectra",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "cricket batting statistics",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "ceramic kiln glazing",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "violin bow repair",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "aircraft turbine schematics",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "neolithic cave pigments",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "saffron harvest techniques",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "origami folding tutorial",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "antimatter reactor calibration",
+      "relevant_files": [],
+      "expected_no_match": true
+    }
+  ]
+}

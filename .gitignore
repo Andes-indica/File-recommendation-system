@@ -4,3 +4,12 @@
 __pycache__/
 *.py[cod]
 src/*.egg-info/
+frontend/node_modules/
+frontend/dist/
+src/file_recommender/static/
+*.tsbuildinfo
+playwright-report/
+test-results/
+.ruff_cache/
+dist/
+build/

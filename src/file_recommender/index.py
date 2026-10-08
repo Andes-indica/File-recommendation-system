@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections import Counter
+from contextvars import ContextVar
 import hashlib
 import json
 import math
@@ -23,6 +24,15 @@ MAX_FILE_BYTES = 1024 * 1024
 RRF_RANK_CONSTANT = 60
 TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
 FTS_OPERATORS = {"and", "or", "not", "near"}
+SEARCH_SCOPE = ContextVar("file_search_scope", default=None)
+
+
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
 
 class EmbeddingProvider(Protocol):
     def encode(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
@@ -79,13 +89,20 @@ class IndexStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(self.database_path, timeout=15, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 15000")
+        allowed = SEARCH_SCOPE.get()
+        if allowed is not None:
+            connection.execute("CREATE TEMP TABLE authorized_documents(id INTEGER PRIMARY KEY)")
+            connection.executemany("INSERT INTO authorized_documents VALUES(?)", ((i,) for i in allowed))
+            connection.execute("CREATE TEMP VIEW documents AS SELECT d.* FROM main.documents d JOIN authorized_documents a ON a.id=d.id")
         return connection
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS documents (
@@ -614,6 +631,20 @@ class IndexStore:
         return execution.plan, execution.results
 
     def search_with_diagnostics(
+        self,
+        query: str,
+        user_id: str | None = None,
+        limit: int = 10,
+        context_directory: str | Path | None = None,
+        allowed_document_ids: set[int] | None = None,
+    ) -> SearchExecution:
+        token = SEARCH_SCOPE.set(allowed_document_ids)
+        try:
+            return self._search_with_diagnostics(query, user_id, limit, context_directory, allowed_document_ids)
+        finally:
+            SEARCH_SCOPE.reset(token)
+
+    def _search_with_diagnostics(
         self,
         query: str,
         user_id: str | None = None,

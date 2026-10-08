@@ -1,0 +1,176 @@
+{
+  "name": "workspace-holdout",
+  "provenance": {
+    "kind": "authored_synthetic",
+    "independently_reviewed": false,
+    "source": "Existing 15 synthetic documents; templates and labels are committed in scripts/build_evaluation_corpus.py.",
+    "purpose": "Regression evidence only; the holdout uses separate phrasing, not independently collected user data."
+  },
+  "queries": [
+    {
+      "query": "Could you locate the document discussing disaster recovery contacts?",
+      "relevant_files": [
+        "backup-recovery.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing outdoor portraits composition?",
+      "relevant_files": [
+        "camera-photography.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing cloud infrastructure migration?",
+      "relevant_files": [
+        "cloud-migration-plan.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing product release concerns?",
+      "relevant_files": [
+        "customer-feedback.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing first-week training tasks?",
+      "relevant_files": [
+        "employee-onboarding.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing forecast assumptions expenses?",
+      "relevant_files": [
+        "finance-budget.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing seasonal garden calendar?",
+      "relevant_files": [
+        "garden-care.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing system design debrief?",
+      "relevant_files": [
+        "hiring-interview.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing next software release?",
+      "relevant_files": [
+        "product-roadmap.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing security response owners?",
+      "relevant_files": [
+        "security-incident-review.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing retrospective follow-up owners?",
+      "relevant_files": [
+        "sprint-retrospective.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing platform team action items?",
+      "relevant_files": [
+        "team-meeting.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing submission deadlines employee trips?",
+      "relevant_files": [
+        "travel-expenses.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing vehicle maintenance guide?",
+      "relevant_files": [
+        "vehicle-maintenance.md"
+      ]
+    },
+    {
+      "query": "Could you locate the document discussing platform support handoff?",
+      "relevant_files": [
+        "support-handoff.txt"
+      ]
+    },
+    {
+      "query": "Find material about nebula xylophone blueprint",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about marine octopus taxonomy",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about medieval pottery archaeology",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about lunar rover telemetry",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about quantum superconductivity experiment",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about volcanic isotope dating",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about ballet choreography handbook",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about sourdough fermentation recipes",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about submarine sonar acoustics",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about renaissance sculpture catalogue",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about rainforest amphibian genetics",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about telescope exoplanet spectra",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about cricket batting statistics",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about ceramic kiln glazing",
+      "relevant_files": [],
+      "expected_no_match": true
+    },
+    {
+      "query": "Find material about violin bow repair",
+      "relevant_files": [],
+      "expected_no_match": true
+    }
+  ]
+}

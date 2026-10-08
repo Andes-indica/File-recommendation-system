@@ -98,7 +98,7 @@ def create_app(store: IndexStore | None = None, oidc_verifier: OIDCTokenVerifier
         )
     else:
         index = store
-    application = FastAPI(title="Intelligent File Recommendation API", version="0.1.0")
+    application = FastAPI(title="Intelligent File Recommendation API", version="1.0.0")
 
     def resolve_user_id(requested_user_id: str | None, authorization: str | None) -> str | None:
         if not auth_enabled:
@@ -262,6 +262,8 @@ def create_app(store: IndexStore | None = None, oidc_verifier: OIDCTokenVerifier
             raise HTTPException(status_code=401, detail="Invalid audit token.")
         return {"events": index.list_audit_events(actor_id, event_type, limit)}
 
+    from .workspace import attach_workspace
+    attach_workspace(application, index, auth_enabled)
     return application
 
 

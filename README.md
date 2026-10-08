@@ -1,203 +1,118 @@
-# Intelligent File Recommendation
+# Folio · Intelligent File Recommendation
 
-An incremental, local-first implementation of the file discovery architecture. It indexes supported local documents, routes queries across lexical and optional semantic retrieval, and personalizes results using supplied working context and recorded activity.
+A working local file workspace with a browser UI, background indexing, explainable recommendations, and conversational search refinements. Files stay on your machine; search works without model credentials.
 
-See the [project blueprint](docs/project-blueprint.md) for canonical intent,
-target architecture, implementation snapshot, and delivery plan. The
-[feature-status matrix](docs/feature-status.md) provides a shorter status view.
+## Start the application
 
-![System architecture](docs/image-1.png)
-
-## Run locally
-
-Use Python 3.11 or newer. Install the project and start the API:
+Linux is the supported host for this release. Use Python 3.11–3.14 and Node 22.12+.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev,documents]'
-uvicorn file_recommender.api:app --reload
+python -m pip install -r requirements.lock
+python -m pip install --no-deps -e .
+cd frontend
+npm ci
+npm run build
+cd ..
+file-recommender serve
 ```
 
-The API listens on `http://127.0.0.1:8000`; interactive API documentation is at `/docs`.
+Open **http://127.0.0.1:8000**. The command starts the API, serves the built UI, and supervises a separate indexing worker. Stop it with Ctrl+C.
 
-### Authentication and File Permissions
-
-The API remains open for local development when no auth mode is configured. Static tokens are convenient for local multi-user testing; use OIDC JWT verification when integrating an identity provider.
-
-For static local tokens, configure a JSON map from user IDs to unique private tokens of at least 16 characters:
+For an existing checkout whose dependencies and UI have already been built:
 
 ```bash
-export FILE_RECOMMENDER_AUTH_TOKENS='{"alice":"replace-with-a-long-random-token","bob":"replace-with-another-long-random-token"}'
-uvicorn file_recommender.api:app --reload
+.venv/bin/file-recommender serve
 ```
 
-Use a secret manager or private environment injection outside local development; never commit real tokens. Authenticated indexing makes the caller the file owner. Search and file-open events are scoped to that principal, and any supplied `user_id` must match it. Files owned by another user are skipped during re-indexing rather than overwritten.
+A fresh dependency resolution is also supported with `python -m pip install -e '.[dev]'`; the committed lock files reproduce the verified versions. For an installable wheel containing the UI, run `bash scripts/build_release.sh` and install the resulting wheel in `dist/`.
 
-Owners can grant and revoke read access for another user principal with `POST /permissions` and `DELETE /permissions` (static-token mode only accepts configured users):
+## Your first search
+
+1. Open **Sources → Connect folder** and enter an absolute path to a document folder on this machine. The original files are not moved.
+2. Alternatively, use **Upload files** or drop documents onto the Sources page.
+3. Wait for the indexing job to complete; its progress and per-file errors appear under **Indexing activity**.
+4. Describe the file on **Workspace**, for example `release milestones launch timeline`.
+5. Refine with `only PDFs`, `from last week`, or source/type/date filters.
+6. Open a preview, download the original, and mark recommendations relevant or not relevant.
+
+For a reproducible sample, connect this repository's `tests/fixtures/evaluation/documents` folder. It contains 15 clearly synthetic documents covering projects, finance, support, and other topics.
+
+Supported formats: **TXT, MD, RST, DOCX, selectable-text PDF, XLSX, PPTX**. Scanned PDFs require OCR and are reported as unsupported. Each file is limited to 25 MiB; extraction also applies archive, page, slide, cell, and character limits. See [operations](docs/operations.md).
+
+## Optional local AI
+
+The default planner, filename search, full-text search, explanations, follow-ups, and personalization work immediately.
+
+For semantic search, install the optional runtime in the same environment:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/permissions \
-  -H 'Authorization: Bearer <alice-token>' \
-  -H 'Content-Type: application/json' \
-  -d '{"path":"/path/to/your/files/plan.md","target_user_id":"bob"}'
-
-curl -X DELETE http://127.0.0.1:8000/permissions \
-  -H 'Authorization: Bearer <alice-token>' \
-  -H 'Content-Type: application/json' \
-  -d '{"path":"/path/to/your/files/plan.md","target_user_id":"bob"}'
+source .venv/bin/activate
+python -m pip install -e '.[semantic]'
 ```
 
-For an external OIDC provider, install the auth extra and configure the API audience, exact issuer, and provider JWKS URL:
+Restart the application, then open **Settings → Set up embeddings**. This explicitly downloads `sentence-transformers/all-MiniLM-L6-v2` and rebuilds embeddings in the background. Subsequent searches load the cached model without contacting the model host. Keyword search remains available during setup or failure.
+
+Settings also offers explicit setup of the optional local cross-encoder reranker after installing the semantic runtime. It runs only for close or weak matches, with at most 30 files.
+
+For local query reasoning, install Ollama separately, start `ollama serve`, and use **Settings → Download qwen3:4b**. After download, choose **Ollama** as the reasoning provider and save. Ollama interprets complex queries; the application validates its proposals and retains control over source and filter restrictions.
+
+Cloud reasoning is disabled by default. Enabling it requires an HTTPS-compatible chat-completions endpoint, model, and API key in Settings. The query planner sends queries, not indexed document contents. Keys are never returned to the browser and are omitted from backups.
+
+## Privacy and controls
+
+- The launcher binds only to loopback. Host/Origin checks and a generated local session protect the workspace API.
+- The application only searches registered sources. Downloads use file IDs and reject symlinks in every path component.
+- Personalization is capped at 15% of relevance. You can disable it or reset access/feedback signals.
+- Search history is kept locally for 30 days. With history off, queries and conversation context are retained in bounded process memory for the current conversation, not persisted as query text.
+- Operational events exclude raw queries, paths, document content, and keys.
+- This is a personal local application. A browser tab can only see files accessible to the operating-system user running the service.
+
+## Data and operation
 
 ```bash
-pip install -e '.[auth]'
-export FILE_RECOMMENDER_OIDC_ISSUER='https://identity.example.com/'
-export FILE_RECOMMENDER_OIDC_AUDIENCE='file-recommender-api'
-export FILE_RECOMMENDER_OIDC_JWKS_URL='https://identity.example.com/.well-known/jwks.json'
-uvicorn file_recommender.api:app --reload
+file-recommender serve --data-dir /path/to/private/folio-data --port 8000
+file-recommender worker --data-dir /path/to/private/folio-data
 ```
 
-OIDC mode accepts RS256-signed bearer JWT access tokens and validates issuer, audience, expiration, and subject against keys fetched from the configured HTTPS JWKS URL. The verified `sub` becomes the ACL principal. Opaque tokens and interactive login flows are not implemented. Configure either OIDC or the static token map, not both. Existing documents without ACL entries are hidden until indexed by an authenticated owner.
+The default data directory is `.file-recommender/`. `FILE_RECOMMENDER_DB` can override the database path. SQLite uses WAL, foreign keys, and additive migrations; existing v1 document IDs, permissions, and activity are preserved. Keep the data directory private.
 
-Use HTTPS and deployment-managed configuration/secrets outside local development. OIDC key sets are cached and refreshed by PyJWT; provider outages fail closed with `503` rather than bypassing authentication.
+**Settings → Download backup** creates a consistent SQLite snapshot and includes completed uploads. **Restore backup** replaces local index/settings/history after explicit confirmation. Pause or finish active jobs first. Folder originals are not part of the archive; synchronize those sources after restoring.
 
-Index a local directory:
+The worker watches folder changes, debounces events, reconciles at startup and every five minutes, and resumes interrupted indexing jobs. Unavailable roots and extraction failures preserve the last good indexed version. Removing a source removes its indexed records and preserves its original files.
 
-```bash
-curl -X POST http://127.0.0.1:8000/index \
-  -H 'Content-Type: application/json' \
-  -d '{"directory":"/path/to/your/files"}'
-```
+Legacy endpoints remain available; see [legacy API reference](docs/legacy-api.md). When static-token or OIDC authentication is configured, the personal workspace API is disabled to avoid exposing authenticated files through a single-user UI. Shared deployment is outside this release.
 
-Search the indexed files:
+## Checks and evaluation
 
 ```bash
-curl -X POST http://127.0.0.1:8000/search \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"project launch notes","user_id":"local-user"}'
-```
-
-Pass the active project directory to apply a small working-context preference:
-
-```bash
-curl -X POST http://127.0.0.1:8000/search \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"project launch notes","user_id":"local-user","context_directory":"/path/to/your/files/current-project"}'
-```
-
-The context directory must exist. It is used only for path-proximity scoring; the API does not scan it or send its contents to a model.
-
-`.txt`, `.md`, `.rst`, `.docx`, `.pdf`, `.xlsx`, and `.pptx` files up to 1 MiB are indexed. Office/PDF support requires the `documents` extra shown above. Extraction caps text at 500,000 characters, limits PDFs to 200 pages and presentations to 200 slides, and reads at most 50,000 spreadsheet cells. Office ZIP archives are limited to 20 MiB uncompressed and 2,000 members, with a maximum compression ratio of 100. Malformed, empty, encrypted, oversized, hidden, and unsupported files are skipped. The database defaults to `.file-recommender/index.sqlite3`; set `FILE_RECOMMENDER_DB` to change it. Keyword search works locally without model credentials.
-
-## Current retrieval scope
-
-- Filename search for explicit filename queries.
-- Metadata filters using `type:md`, `ext:txt`, `after:YYYY-MM-DD`, and `before:YYYY-MM-DD`.
-- Full-text keyword search backed by SQLite FTS5.
-- Chunk-level keyword and semantic matching using 1,000-character windows with 150-character overlap; results are fused and returned at file level.
-- Hybrid filename and full-text candidate ranking for longer natural-language queries; semantic candidates join when embeddings are enabled.
-- Confidence scoring from candidate relevance and query-term coverage, with one bounded synonym/stop-word expansion retry for low-confidence non-metadata searches.
-- Optional semantic search through a local Sentence Transformers model, with vectors cached by file content and model id.
-- Optional ambiguity-aware cross-encoder reranking of up to 30 candidates; confident results and single-candidate searches skip this cost.
-- Personalized ranking from file-access frequency and recency, preferred extensions and topics, and per-file UTC hour/weekday patterns.
-- A derived user profile endpoint for frequently accessed files, preferred extensions, topics, and active time patterns.
-
-Search responses include a `confidence` value from `0.0` to `1.0` and an `expanded_query` field. When initial confidence is below `0.6`, the service may remove common filler words and add a small set of local synonyms, then retry once using hybrid retrieval. Metadata-filter searches are not expanded. No recursive retries are performed.
-
-Search responses also include pipeline diagnostics: candidate count, whether reranking ran, the rerank decision, and end-to-end latency in milliseconds. With a cross-encoder configured, reranking runs only when at least two candidates remain and confidence is below `0.72` or the top-two score margin is within 12%. If the reranker fails, the service keeps the retrieval ranking.
-
-Enable local semantic retrieval by installing the optional dependency and setting a model before starting the API:
-
-```bash
-pip install -e '.[semantic]'
-export FILE_RECOMMENDER_MODEL=sentence-transformers/all-MiniLM-L6-v2
-export FILE_RECOMMENDER_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
-uvicorn file_recommender.api:app --reload
-```
-
-Sentence Transformers downloads each selected model when enabled. The first indexing pass embeds supported files; unchanged files reuse cached vectors. Queries asking for related meaning (for example, `similar to driving`) use semantic-only retrieval. Longer natural-language queries fuse semantic, filename, and keyword candidates. When `FILE_RECOMMENDER_RERANKER_MODEL` is set, an ambiguity-aware cross-encoder may rerank the top 30 candidates and its result is reflected in the explanation. Without these settings, semantic retrieval and reranking remain disabled.
-
-Enable optional LLM query understanding by configuring an OpenAI-compatible chat-completions endpoint:
-
-```bash
-export FILE_RECOMMENDER_LLM_API_KEY='your-provider-key'
-export FILE_RECOMMENDER_LLM_MODEL='your-model-name'
-export FILE_RECOMMENDER_LLM_BASE_URL='https://api.openai.com/v1'
-uvicorn file_recommender.api:app --reload
-```
-
-The analyzer runs only for longer queries already routed to hybrid search, sends only the user query (never indexed file contents), and has a 3-second timeout. Its route proposal must match capabilities enabled in the app; unsupported or failed analyses fall back to the local planner. Use a provider whose data handling is appropriate for your queries.
-
-Record file opens to build a local usage profile and supply personalization signals during search:
-
-```bash
-curl -X POST http://127.0.0.1:8000/access \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":"local-user","path":"/path/to/your/files/plan.md"}'
-
-curl http://127.0.0.1:8000/users/local-user/profile
-```
-
-Profiles are derived from recorded access events when requested; the service does not persist a separate profile record. Ranking explanations identify when access history, file-type/topic preference, recency, or matching UTC time patterns influenced a result.
-
-Search as a user to persist recommendation impressions. Each result includes a `recommendation_id`; submit feedback against that ID to personalize later searches:
-
-```bash
-curl -X POST http://127.0.0.1:8000/feedback \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":"local-user","recommendation_id":12,"feedback":"relevant"}'
-```
-
-Use `not_relevant` to downrank a result on future matching searches. Feedback is tied to the user who received the recommendation, and aggregate counts appear in the profile response.
-
-## Audit log
-
-The local SQLite audit trail records completed indexing, searches, file opens, and recommendation feedback. It stores event type, time, caller-supplied actor ID, internal resource IDs, and limited operational metadata. Raw queries, full file paths, document contents, and credentials are not written to the audit trail.
-
-Enable the read-only audit endpoint by setting a private shared token before starting the API:
-
-```bash
-export FILE_RECOMMENDER_AUDIT_TOKEN='set-a-private-local-token'
-uvicorn file_recommender.api:app --reload
-```
-
-Then list or filter events with `GET /audit`, using the `X-Audit-Token` header. Optional filters are `actor_id`, `event_type`, and `limit` (maximum 500). The token is a local operational control, not a replacement for user authentication. Actor IDs are caller-asserted until authentication is implemented. SQLite triggers block normal update/delete statements, but this local log is not cryptographically tamper-proof and should not be treated as a production compliance audit system.
-
-## Retrieval Evaluation
-
-Run the included local smoke corpus against the current lexical retrieval pipeline:
-
-```bash
-python -m file_recommender.evaluation \
+.venv/bin/python -m pytest -q
+cd frontend
+npm run build
+npm run test:e2e
+cd ..
+.venv/bin/python -m file_recommender.workspace_evaluation \
   --documents tests/fixtures/evaluation/documents \
-  --judgments tests/fixtures/evaluation/judgments.json \
-  --k 3
-```
-
-The evaluator builds a temporary SQLite index and prints JSON containing Recall@k, MRR@k, nDCG@k, aggregate and per-planned-route median/p95 retrieval latency and ranking metrics, route counts, and per-query results. Judgments list relevant filenames in `relevant_files`. The bundled 22-query corpus covers 15 synthetic documents, including hybrid, filename, and metadata routes, multi-relevant queries, and near-topic confounders. Hybrid retrieval fuses filename, FTS5, optional semantic ranks, and query-term coverage with reciprocal-rank fusion. The current lexical baseline reports Recall@3 1.00, MRR@3 1.0000, and nDCG@3 0.9964 on this set. One multi-relevant travel/budget query still places its second relevant file below a related onboarding result. This is a regression set, not a reviewed real-user corpus or evidence of production retrieval quality.
-
-An expanded 30-query authored synthetic benchmark includes `expected_strategy`
-labels and explicit no-match cases. The corpus is labeled with provenance
-metadata declaring it was authored from the existing fixture docs. It runs
-without an embedding model, so its route metrics do not claim semantic routing.
-It reports `route_accuracy` and `no_match_false_positive_rate` separately from
-ranking metrics. Queries labeled as no-match are excluded from aggregate
-relevance-ranking metrics:
-
-```bash
-python -m file_recommender.evaluation \
+  --judgments tests/fixtures/evaluation/workspace-queries.json
+.venv/bin/python -m file_recommender.workspace_evaluation \
   --documents tests/fixtures/evaluation/documents \
-  --judgments tests/fixtures/evaluation/authored-queries.json \
-  --k 3
+  --judgments tests/fixtures/evaluation/workspace-holdout.json
+.venv/bin/python scripts/benchmark.py
 ```
 
-The current authored-set baseline is Recall@3 1.00, MRR@3 0.9423,
-nDCG@3 0.9574, expected-route accuracy 1.00, and no-match false-positive rate
-0.25. The remaining MRR/nDCG and false-positive rate expose weak-ranking and
-out-of-domain cases. This small authored set is not independently reviewed or
-representative user data. See the
-[project blueprint](docs/project-blueprint.md) for the evaluation roadmap and
-acceptance criteria.
+Playwright uses system Chromium when available, otherwise run `cd frontend && npx playwright install chromium`. CI runs the Python suite, frontend build, and browser checks against an isolated temporary library.
 
-Run tests with `pytest`.
+The new lexical graph was evaluated on **110 authored synthetic queries plus 30 separate-phrasing holdout queries**. Both sets achieved Recall@5/MRR@5/nDCG@5 of 1.00 and no-match false-positive rate of 0.00. This is small, fixture-derived regression evidence, not independently reviewed real-user quality evidence.
+
+A 10,000-file/100,000-chunk synthetic retrieval benchmark on this Linux host measured warm p95 of **257 ms lexical** and **569 ms hybrid**. It uses deterministic synthetic 384-dimensional vectors and excludes model encoding, graph, UI, and indexing throughput. See [verification report](docs/verification.md) for methodology and limits.
+
+## Architecture and scope
+
+React/TypeScript/Vite UI → FastAPI → bounded LangGraph workflow → SQLite FTS5 + sqlite-vec. A separately supervised Python worker handles incremental ingestion and model setup.
+
+The agent chooses retrieval routes, checks match strength, expands once if needed, optionally reranks, applies controlled personalization, and explains retrieved candidates. It cannot execute commands, modify originals, or invent file paths.
+
+[Project blueprint](docs/project-blueprint.md) · [Implementation details](docs/implementation.md) · [Feature status](docs/feature-status.md) · [Operations](docs/operations.md)
+
+OCR, remote-drive connectors, shared accounts, hosted deployment, document-answer generation, and automatic editor detection are outside the agreed first release. Optional local LLM and embedding integrations require user-directed model installation; they were tested through deterministic adapters/native vector integration rather than a downloaded production model on this host.
