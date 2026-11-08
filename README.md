@@ -103,21 +103,10 @@ cd ..
 
 Playwright uses system Chromium when available, otherwise run `cd frontend && npx playwright install chromium`. CI runs the Python suite, frontend build, and browser checks against an isolated temporary library.
 
-<<<<<<< HEAD
 The new lexical graph was evaluated on **110 authored synthetic queries plus 30 separate-phrasing holdout queries**. Both sets achieved Recall@5/MRR@5/nDCG@5 of 1.00 and no-match false-positive rate of 0.00. This is small, fixture-derived regression evidence, not independently reviewed real-user quality evidence.
 
 A 10,000-file/100,000-chunk synthetic retrieval benchmark on this Linux host measured warm p95 of **257 ms lexical** and **569 ms hybrid**. It uses deterministic synthetic 384-dimensional vectors and excludes model encoding, graph, UI, and indexing throughput. See [verification report](docs/verification.md) for methodology and limits.
 
-## Architecture and scope
-
-React/TypeScript/Vite UI → FastAPI → bounded LangGraph workflow → SQLite FTS5 + sqlite-vec. A separately supervised Python worker handles incremental ingestion and model setup.
-
-The agent chooses retrieval routes, checks match strength, expands once if needed, optionally reranks, applies controlled personalization, and explains retrieved candidates. It cannot execute commands, modify originals, or invent file paths.
-
-[Project blueprint](docs/project-blueprint.md) · [Implementation details](docs/implementation.md) · [Feature status](docs/feature-status.md) · [Operations](docs/operations.md)
-
-OCR, remote-drive connectors, shared accounts, hosted deployment, document-answer generation, and automatic editor detection are outside the agreed first release. Optional local LLM and embedding integrations require user-directed model installation; they were tested through deterministic adapters/native vector integration rather than a downloaded production model on this host.
-=======
 ### Preparing a reviewed evaluation corpus
 
 Before using judgments to tune retrieval, create a separate corpus from
@@ -134,5 +123,12 @@ not indexed, or ambiguous duplicate filenames. The existing authored fixture
 does not pass as reviewed evidence merely because it is used by this workflow;
 its synthetic provenance remains explicit.
 
-Run tests with `pytest`.
->>>>>>> 590d687 (fix: improved the retrieval)
+## Architecture and scope
+
+React/TypeScript/Vite UI → FastAPI → bounded LangGraph workflow → SQLite FTS5 + sqlite-vec. A separately supervised Python worker handles incremental ingestion and model setup.
+
+The agent chooses retrieval routes, checks match strength, expands once if needed, optionally reranks, applies controlled personalization, and explains retrieved candidates. It cannot execute commands, modify originals, or invent file paths.
+
+[Project blueprint](docs/project-blueprint.md) · [Implementation details](docs/implementation.md) · [Feature status](docs/feature-status.md) · [Operations](docs/operations.md)
+
+OCR, remote-drive connectors, shared accounts, hosted deployment, document-answer generation, and automatic editor detection are outside the agreed first release. Optional local LLM and embedding integrations require user-directed model installation; they were tested through deterministic adapters/native vector integration rather than a downloaded production model on this host.
